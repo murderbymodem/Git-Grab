@@ -10,6 +10,10 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - End every commit message with Claude's co-author trailer, so both accounts are credited:
   `Co-Authored-By: Claude <noreply@anthropic.com>` (keep the model name if the session supplies one).
 - When squash-merging a PR, keep the `Co-Authored-By` trailer in the final message.
+- Committing and pushing directly to `main` is allowed; no feature branch or PR is needed.
+- Cloud sessions can't push tags. Releases are made from GitHub's Releases page, which
+  creates the tag and triggers `.github/workflows/release.yml` to build the binaries.
+  Don't build release binaries locally; let the workflow do it.
 
 ## Commands
 
