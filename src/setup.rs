@@ -1,6 +1,7 @@
 //! Guided setup, shown when the program is double-clicked (or run as `setup`).
 
-use crate::config::{Config, APP_DIR};
+use crate::config::Config;
+use crate::paths::{self, Location};
 use crate::{auth, wintask};
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, Write};
@@ -11,14 +12,108 @@ pub fn run(config_path: &Path) -> Result<()> {
     println!("Saves every file from each GitHub release to a folder or network share,");
     println!("as <Project>\\<version>\\<file>.\n");
 
+    match paths::location() {
+        Location::InsideZip => {
+            println!("It looks like this was opened straight from the zip file, so Windows is");
+            println!("running it from a temporary folder. Extract the zip first (right-click it,");
+            println!("Extract All), put the folder somewhere permanent such as C:\\Tools, and");
+            println!("start the program from there.");
+            return Ok(());
+        }
+        Location::Downloads => {
+            println!("This program is in your Downloads folder. Its settings are saved next to it,");
+            println!("and the hourly check runs it from where it is, so it's best to move the whole");
+            println!("folder somewhere permanent first, for example C:\\Tools\\github-release-archiver,");
+            println!("then start it from there.");
+            if !yes_no("Continue from the Downloads folder anyway?", false) {
+                return Ok(());
+            }
+            println!();
+        }
+        Location::Fine => {}
+    }
+    if !paths::is_portable() {
+        println!("This program's folder can't be written to, so settings are kept in");
+        println!("{}\n", paths::data_dir().display());
+    }
+
+    // Settings from a version before 0.7, which kept them in the user profile.
+    if !config_path.exists() && config_path == paths::config_path() {
+        if let Some(old) = paths::legacy_config() {
+            move_old_settings(&old, config_path)?;
+        }
+    }
     if config_path.exists() {
         return menu(config_path);
     }
     first_time(config_path)
 }
 
+fn move_old_settings(old: &Path, new: &Path) -> Result<()> {
+    println!("Found settings from an earlier version in {}.", old.parent().unwrap_or(old).display());
+    println!("This version keeps its settings in its own folder instead.");
+    if !yes_no(&format!("Move them to {}?", new.parent().unwrap_or(new).display()), true) {
+        println!();
+        return Ok(());
+    }
+    if let Some(dir) = new.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(old, new).with_context(|| format!("cannot copy {} to {}", old.display(), new.display()))?;
+    println!("Settings copied to {}", new.display());
+
+    // The hourly check still points at the old config (and maybe an old copy
+    // of the program), so update it before cleaning up.
+    let mut task_ok = true;
+    if wintask::task_paths(wintask::DEFAULT_NAME).is_some() {
+        println!("\nThe hourly check needs updating to use this folder.");
+        if let Err(e) = schedule(new) {
+            println!("Couldn't update the scheduled task: {e:#}");
+            task_ok = false;
+        }
+    }
+    if task_ok {
+        let removed = paths::remove_legacy_files();
+        if !removed.is_empty() {
+            println!("\nRemoved files left by the earlier version:");
+            for p in removed {
+                println!("  {}", p.display());
+            }
+        }
+    } else {
+        println!("The old files are left in place for now. Choose 5 in the menu to update the");
+        println!("hourly check, then they can be removed.");
+    }
+    println!();
+    Ok(())
+}
+
+/// Warns when the scheduled task runs a different copy of the program or
+/// config (e.g. after the folder was moved), and offers to fix it.
+fn check_task_location(config_path: &Path) {
+    let Some((command, args)) = wintask::task_paths(wintask::DEFAULT_NAME) else { return };
+    let exe = std::env::current_exe().ok().and_then(|e| wintask::absolute(&e).ok());
+    let cfg = wintask::absolute(config_path).ok();
+    let same_exe = exe.is_some_and(|e| e.display().to_string().eq_ignore_ascii_case(&command));
+    let same_cfg = cfg.is_some_and(|c| args.to_lowercase().contains(&c.display().to_string().to_lowercase()));
+    if same_exe && same_cfg {
+        return;
+    }
+    println!("The hourly check runs {command}");
+    println!("with different settings than this copy of the program (was the folder moved?).");
+    if yes_no("Update it to use this copy?", true) {
+        if let Err(e) = schedule(config_path) {
+            println!("Couldn't update the scheduled task: {e:#}");
+        } else if paths::legacy_config().is_none() {
+            paths::remove_legacy_files(); // e.g. the old copy in %LOCALAPPDATA%\Programs
+        }
+    }
+    println!();
+}
+
 /// Shown when a config already exists.
 fn menu(config_path: &Path) -> Result<()> {
+    check_task_location(config_path);
     loop {
         println!("Config: {}\n", config_path.display());
         if let Err(e) = crate::status(config_path) {
@@ -38,7 +133,7 @@ fn menu(config_path: &Path) -> Result<()> {
             "1" | "2" => Config::load(config_path).and_then(|c| crate::run_once(&c, choice == "2").map(|_| ())),
             "3" => open_editor(config_path),
             "4" => crate::login(config_path, None, false).map(|_| ()),
-            "5" => schedule(config_path, None),
+            "5" => schedule(config_path),
             "6" => return first_time(config_path),
             "Q" | "" => return Ok(()),
             _ => {
@@ -158,11 +253,9 @@ fn first_time(config_path: &Path) -> Result<()> {
 
     // 5. Background checks
     println!("\nStep 5 of 5: Background checks");
-    let mut exe = None;
     if cfg!(windows) {
         if yes_no("Check for new releases every hour in the background?", true) {
-            exe = install_program();
-            if let Err(e) = schedule(config_path, exe.clone()) {
+            if let Err(e) = schedule(config_path) {
                 println!("Couldn't create the scheduled task: {e:#}");
             }
         }
@@ -178,8 +271,10 @@ fn first_time(config_path: &Path) -> Result<()> {
         }
     }
     println!("\nAll set. Double-click the program again any time for the menu.");
-    if let Some(e) = exe {
-        println!("The program is installed at {}", e.display());
+    if let Some(dir) = paths::exe_dir() {
+        println!("Keep it in {} (the hourly check runs it from there).", dir.display());
+        println!("If you move the folder, start the program from its new place and it will offer");
+        println!("to update the hourly check.");
     }
     Ok(())
 }
@@ -207,36 +302,13 @@ fn ask_folder(label: &str) -> Option<String> {
     }
 }
 
-fn schedule(config_path: &Path, exe: Option<PathBuf>) -> Result<()> {
+fn schedule(config_path: &Path) -> Result<()> {
     wintask::ensure_windows()?;
     println!("By default the check runs while you're logged on, and a window flashes briefly.");
     println!("Running it when you're logged off too hides the window, but Windows needs your");
     println!("password to store with the task.");
     let logged_off = yes_no("Also run while you're logged off?", false);
-    crate::install_task(config_path, 60, logged_off, wintask::DEFAULT_NAME, None, exe)
-}
-
-/// Copies the program to %LOCALAPPDATA%\Programs so the scheduled task keeps
-/// working if the downloaded copy is deleted. Returns the path to use.
-fn install_program() -> Option<PathBuf> {
-    let current = std::env::current_exe().ok()?;
-    let dir = dirs::data_local_dir()?.join("Programs").join(APP_DIR);
-    let dest = dir.join(current.file_name()?);
-    let same = std::fs::canonicalize(&current).ok() == std::fs::canonicalize(&dest).ok();
-    if same {
-        return Some(dest);
-    }
-    println!("The background check needs the program in a permanent place.");
-    if !yes_no(&format!("Copy it to {}?", dir.display()), true) {
-        return None; // use the current location
-    }
-    match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&current, &dest)) {
-        Ok(_) => Some(dest),
-        Err(e) => {
-            println!("  Couldn't copy it ({e}); using the current location instead.");
-            None
-        }
-    }
+    crate::install_task(config_path, 60, logged_off, wintask::DEFAULT_NAME, None, None)
 }
 
 fn open_editor(path: &Path) -> Result<()> {

@@ -151,16 +151,6 @@ fn check_unknown_keys(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Default config location: ./config.toml if present, else the per-user config folder
-/// (%APPDATA%\github-release-archiver\config.toml or ~/.config/github-release-archiver/config.toml).
-pub fn default_path() -> PathBuf {
-    let local = PathBuf::from("config.toml");
-    if local.is_file() {
-        return local;
-    }
-    dirs::config_dir().map(|d| d.join(APP_DIR).join("config.toml")).unwrap_or(local)
-}
-
 pub fn example() -> &'static str {
     include_str!("../config.example.toml")
 }

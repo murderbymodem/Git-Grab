@@ -16,7 +16,8 @@ archive_root = '/mnt/software'
 # mirrors = ['\\nas\software']
 
 # GitHub login. The easiest way is to run `github-release-archiver login`, which
-# saves a token (Windows Credential Manager on Windows, a private file on Linux).
+# saves a token (Windows Credential Manager on Windows; on Linux a private `token`
+# file next to the program).
 # Logging in raises the API limit from 60 to 5000 requests/hour and lets the tool
 # read your own starred repos. Alternatives: set GITHUB_TOKEN, or put a token here:
 # github_token = "github_pat_..."

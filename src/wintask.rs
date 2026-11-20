@@ -164,6 +164,22 @@ pub fn status(name: &str) -> Result<String> {
     schtasks(&["/Query", "/TN", name, "/FO", "LIST", "/V"])
 }
 
+/// The program path and arguments the scheduled task runs, if it exists.
+pub fn task_paths(name: &str) -> Option<(String, String)> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let xml = schtasks(&["/Query", "/TN", name, "/XML"]).ok()?;
+    Some((xml_field(&xml, "Command")?, xml_field(&xml, "Arguments").unwrap_or_default()))
+}
+
+fn xml_field(xml: &str, tag: &str) -> Option<String> {
+    let start = xml.find(&format!("<{tag}>"))? + tag.len() + 2;
+    let end = start + xml[start..].find(&format!("</{tag}>"))?;
+    let v = &xml[start..end];
+    Some(v.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+}
+
 pub fn run_now(name: &str) -> Result<()> {
     ensure_windows()?;
     schtasks(&["/Run", "/TN", name]).map(|_| ())
@@ -213,6 +229,22 @@ mod tests {
         assert!(xml.contains("<Arguments>--config &quot;C:\\Tools\\gra\\config.toml&quot; run</Arguments>"));
         assert!(xml.contains(r"<UserId>PC\eric &amp; co</UserId>"));
         assert!(xml.contains("<LogonType>Password</LogonType>"));
+    }
+
+    #[test]
+    fn reads_task_xml_fields() {
+        let spec = TaskSpec {
+            name: DEFAULT_NAME.into(),
+            exe: PathBuf::from(r"C:\Tools\A & B\github-release-archiver.exe"),
+            args: r#"--config "C:\Tools\A & B\config.toml" run"#.into(),
+            workdir: PathBuf::from(r"C:\Tools"),
+            interval_minutes: 60,
+            user: "me".into(),
+            logon: Logon::Interactive,
+        };
+        let xml = task_xml(&spec);
+        assert_eq!(xml_field(&xml, "Command").unwrap(), r"C:\Tools\A & B\github-release-archiver.exe");
+        assert_eq!(xml_field(&xml, "Arguments").unwrap(), r#"--config "C:\Tools\A & B\config.toml" run"#);
     }
 
     #[test]

@@ -32,6 +32,7 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - `src/mirror.rs`: copies project folders from archive_root to the `mirrors` folders
 - `src/github.rs`: REST client with ETag cache, starred list, downloads
 - `src/auth.rs`: login (token paste or OAuth device flow), token storage
+- `src/paths.rs`: portable file locations (config, log, cache next to the exe; per-user fallback)
 - `src/setup.rs`: interactive setup wizard and menu (runs when the .exe is double-clicked)
 - `src/wintask.rs`: Windows Task Scheduler XML and `schtasks.exe` calls
 - `config.example.toml`: documented example config, also used by `init` and by tests
@@ -41,5 +42,7 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - Every config key must be added to the key lists in `config.rs` (`TOP_KEYS` etc.),
   or it will be rejected as unknown, and documented in `config.example.toml`.
 - Never delete files under `archive_root` that the state file doesn't record.
+- The app is portable: new files it keeps (other than the archive) go in `paths::data_dir()`,
+  never directly in %APPDATA% or ~/.config.
 - Keep platform-specific code behind `cfg(windows)` / `cfg(not(windows))`; the rest must
   compile and be unit-testable on Linux.

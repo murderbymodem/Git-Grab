@@ -1,8 +1,8 @@
 //! Logging in to GitHub and storing the token.
 //!
-//! The token is kept in Windows Credential Manager on Windows, and in a file
-//! readable only by the owner (~/.config/github-release-archiver/token) on Linux,
-//! which works for headless servers and service accounts.
+//! The token is kept in Windows Credential Manager on Windows (safer than a
+//! file, and nothing to carry around), and on Linux in a `token` file readable
+//! only by its owner, next to the config.
 
 use anyhow::{bail, Context, Result};
 use log::warn;
@@ -42,6 +42,9 @@ pub fn resolve(config_token: Option<&str>) -> Option<(String, Source)> {
 
 #[cfg(windows)]
 mod store {
+    /// The Windows token lives in Credential Manager, which doesn't move.
+    pub fn migrate_legacy() {}
+
     use super::SERVICE;
     use anyhow::Result;
 
@@ -71,14 +74,19 @@ mod store {
 #[cfg(not(windows))]
 mod store {
     use super::SERVICE;
-    use anyhow::{Context, Result};
+    use anyhow::Result;
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::PathBuf;
 
+    /// Next to the program (portable), like the config.
     fn path() -> Result<PathBuf> {
-        Ok(dirs::config_dir().context("no config directory for this user")?.join(SERVICE).join("token"))
+        Ok(crate::paths::data_dir().join("token"))
+    }
+    /// Where versions before 0.7 saved it.
+    fn legacy_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join(SERVICE).join("token"))
     }
     pub fn save(token: &str) -> Result<String> {
         let p = path()?;
@@ -89,11 +97,27 @@ mod store {
         Ok(p.display().to_string())
     }
     pub fn load() -> Result<Option<String>> {
-        match fs::read_to_string(path()?) {
+        let p = path()?;
+        let p = match legacy_path() {
+            Some(old) if !p.exists() && old.exists() => old,
+            _ => p,
+        };
+        match fs::read_to_string(p) {
             Ok(t) => Ok(Some(t.trim().to_string()).filter(|t| !t.is_empty())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+    /// Moves a token saved by an earlier version next to the program.
+    pub fn migrate_legacy() {
+        let (Ok(new), Some(old)) = (path(), legacy_path()) else { return };
+        if old == new || !old.exists() {
+            return;
+        }
+        if !new.exists() && fs::copy(&old, &new).is_err() {
+            return; // fs::copy keeps the 600 permissions
+        }
+        let _ = fs::remove_file(&old);
     }
     pub fn delete() -> Result<bool> {
         match fs::remove_file(path()?) {
@@ -104,7 +128,7 @@ mod store {
     }
 }
 
-pub use store::{delete, load, save};
+pub use store::{delete, load, migrate_legacy, save};
 
 /// The web host for an API URL: api.github.com -> github.com; GHES strips /api/v3.
 pub fn web_url(api_url: &str) -> String {

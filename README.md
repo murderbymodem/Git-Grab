@@ -56,17 +56,20 @@ It's a single program for Windows and Linux.
 ## Quick start (Windows)
 
 1. Download `github-release-archiver-<version>-windows-x64.zip` from
-   [Releases](https://github.com/murderbymodem/github-release-archiver/releases) and extract it.
-2. **Double-click `github-release-archiver.exe`.** A guided setup asks for:
-   - where to save releases (for example `\\nas\software`)
+   [Releases](https://github.com/murderbymodem/github-release-archiver/releases).
+2. **Extract it to a permanent folder**, not Downloads. For example
+   `C:\Tools\github-release-archiver\`. The program is portable: it keeps its
+   settings in that folder, and the hourly check runs it from there.
+3. **Double-click `github-release-archiver.exe`.** A guided setup asks for:
+   - where to save releases (for example `D:\Software`), plus an optional mirror
+     such as `\\nas\software`
    - your GitHub login
    - whether to archive your starred repos, plus any other repos to include
-   - which systems to keep, and how many versions
+   - how many versions to keep
    - whether to check hourly in the background
 
-   It then copies the program to `%LOCALAPPDATA%\Programs\github-release-archiver\`,
-   creates the scheduled task, and offers to run a first check.
-3. Double-click it again any time for a menu: check now, edit the config, log in
+   It then creates the scheduled task and offers to run a first check.
+4. Double-click it again any time for a menu: check now, edit the config, log in
    again, and so on.
 
 Windows may show a SmartScreen warning the first time, because the program isn't
@@ -74,8 +77,36 @@ code-signed. Click **More info → Run anyway**.
 
 You can do the same from a terminal: run `github-release-archiver setup`, or the
 individual steps `init`, `login`, `run --dry-run` and `task install`. On Linux,
-the config goes in `~/.config/github-release-archiver/config.toml` and hourly
-checks use a systemd timer (see below).
+hourly checks use a systemd timer (see below).
+
+## Portable: files next to the program
+
+Everything the program needs lives in the folder that holds it:
+
+| File | What it is |
+|---|---|
+| `config.toml` | Your settings |
+| `github-release-archiver.log` | Log of the scheduled checks (`.log.1` is the previous one) |
+| `cache\` | Cached GitHub responses, so unchanged data doesn't use up the rate limit |
+| `token` | Linux only: the saved GitHub login, readable only by you |
+
+On Windows, the GitHub login is kept in Windows Credential Manager rather than a
+file. It's safer there, and it carries over if you move the folder.
+
+**Moving the folder:** move it, then double-click the program in its new place.
+It notices that the hourly check still points at the old location and offers to
+update it.
+
+If the program's folder can't be written to, such as `C:\Program Files` or
+`/usr/local/bin`, these files go in your user profile instead
+(`%APPDATA%\github-release-archiver` or `~/.config/github-release-archiver`).
+`-c path\to\config.toml` uses a config from anywhere.
+
+**Upgrading from 0.6 or earlier**, which kept settings in `%APPDATA%`: start the
+new version from its permanent folder. Setup finds the old settings and offers to
+move them next to the program. It then updates the hourly check to run the new
+copy, and removes what the old version left behind: the old config and log,
+its cache, and the program copy in `%LOCALAPPDATA%\Programs`.
 
 ## Mirrors
 
@@ -102,8 +133,8 @@ drive letters.
 ## Logging in
 
 `github-release-archiver login` saves a GitHub token: in **Windows Credential
-Manager** on Windows, and in a file only you can read
-(`~/.config/github-release-archiver/token`) on Linux. Logging in lets the tool
+Manager** on Windows, and on Linux in a `token` file next to the program that
+only you can read. Logging in lets the tool
 read your starred repos and raises GitHub's limit from 60 to 5,000 requests
 per hour.
 

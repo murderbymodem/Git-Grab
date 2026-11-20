@@ -4,6 +4,7 @@ mod config;
 mod github;
 mod logging;
 mod mirror;
+mod paths;
 mod setup;
 mod targets;
 mod util;
@@ -11,7 +12,7 @@ mod wintask;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
-use config::{Config, APP_DIR};
+use config::Config;
 use log::{error, info, warn};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Config file [default: ./config.toml if present, else the per-user config folder]
+    /// Config file [default: config.toml next to the program]
     #[arg(short, long, env = "GITHUB_RELEASE_ARCHIVER_CONFIG", global = true)]
     config: Option<PathBuf>,
     /// Append log output to this file instead of the console
@@ -136,7 +137,7 @@ fn main() -> ExitCode {
 }
 
 fn real_main(cli: Cli) -> Result<ExitCode> {
-    let config_path = cli.config.clone().unwrap_or_else(config::default_path);
+    let config_path = cli.config.clone().unwrap_or_else(paths::config_path);
     let Some(command) = cli.command else { return Ok(ExitCode::SUCCESS) };
     match command {
         Command::Setup => setup::run(&config_path)?,
@@ -169,7 +170,7 @@ fn api_url(config_path: &Path) -> String {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join(APP_DIR).join("http"))
+    Some(paths::cache_dir())
 }
 
 fn init(path: &Path, archive_root: Option<&str>, force: bool) -> Result<()> {
@@ -374,7 +375,7 @@ fn install_task(
     let workdir = config_abs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let log = match log_file {
         Some(l) => l.to_path_buf(),
-        None => workdir.join("github-release-archiver.log"),
+        None => workdir.join(paths::LOG_FILE),
     };
     let exe = match exe {
         Some(e) => e,
