@@ -1,7 +1,7 @@
 # github-release-archiver configuration
 #
-# Files are saved as:  <archive_root>/<Project>/<OS>/<tag>/<file>
-# e.g.  \\nas\software\ripgrep\Windows\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+# Every file from each release is saved as:  <archive_root>/<Project>/<tag>/<file>
+# e.g.  \\nas\software\ripgrep\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
 
 # Where the archive lives. Use single quotes so backslashes are kept as-is.
 #   Windows share:  archive_root = '\\nas\software'
@@ -32,26 +32,18 @@ interval_minutes = 360
 releases = 1
 # Include prereleases (betas, release candidates).
 include_prereleases = false
-# Also save GitHub's auto-generated source zip into a "Source" folder.
+# Also save GitHub's auto-generated source zip (<Project>-<tag>-source.zip).
 include_source = false
 # Delete archived releases beyond the newest N. Leave out to keep everything.
 # Only removes folders this tool created (tracked in <Project>/.github-release-archiver.json).
 # keep_versions = 5
-# Skip files matching these wildcard patterns (* and ?, case-insensitive).
-exclude = ["*.sbom.json", "*.spdx.json", "*.intoto.jsonl"]
-# Only keep files sorted into these OS folders. Leave out for all.
-# only_os = ["Windows", "Linux", "Android"]
+# Every file in a release is downloaded. To skip some, list wildcard patterns
+# (* and ?, case-insensitive). `include` does the opposite: only matching files.
+# exclude = ["*.sbom.json", "*.sig"]
+# include = ["*.zip", "*.msi"]
 # Keep a copy of each project's README (e.g. ripgrep\README.md) so you can tell
 # what a project is. Updated when it changes on GitHub.
 save_readme = true
-
-# Built-in OS folders: Windows, Linux, macOS, Android, iOS, FreeBSD, OpenBSD,
-# NetBSD, and Other (checksum lists, .jar files, anything without OS hints).
-# Add rules to sort files the guesser gets wrong. Checked in order, before the
-# built-in guess. The folder name can be anything.
-# [[os_rules]]
-# pattern = "*-portable.zip"
-# os = "Windows"
 
 # ---- Starred repos ----
 # Archive every repo starred by an account, in addition to the [[repo]] list.
@@ -65,7 +57,7 @@ enabled = false
 # include_archived = true
 # Settings for starred repos only (override the defaults above):
 # releases = 1
-# only_os = ["Windows", "Linux"]
+# exclude = ["*.tar.gz"]
 
 # ---- Repositories ----
 
@@ -76,16 +68,8 @@ repo = "BurntSushi/ripgrep"          # project folder defaults to the repo name:
 repo = "PowerShell/PowerShell"
 releases = 2
 keep_versions = 2
-include = ["*.msi", "*.zip", "*.deb", "*.rpm", "*.tar.gz"]
+include = ["*.msi", "*.zip"]          # only these files from this repo
 
 [[repo]]
 repo = "keepassxreboot/keepassxc"
 folder = "KeePassXC"                 # custom project folder name
-only_os = ["Windows", "Linux"]
-
-# Repo-specific sorting rules are checked before the global ones.
-# [[repo]]
-# repo = "owner/name"
-# [[repo.os_rules]]
-# pattern = "*-x64.zip"
-# os = "Windows"

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 pub fn run(config_path: &Path) -> Result<()> {
     println!("GitHub Release Archiver {}", env!("CARGO_PKG_VERSION"));
-    println!("Saves GitHub release files to a folder or network share, sorted as");
-    println!("<Project>\\<OS>\\<version>\\<file>.\n");
+    println!("Saves every file from each GitHub release to a folder or network share,");
+    println!("as <Project>\\<version>\\<file>.\n");
 
     if config_path.exists() {
         return menu(config_path);
@@ -133,12 +133,6 @@ fn first_time(config_path: &Path) -> Result<()> {
 
     // 4. Options
     println!("\nStep 4 of 5: Options");
-    println!("  Systems to keep: Windows, Linux, macOS, Android, iOS, FreeBSD, Other");
-    let only_os: Vec<String> = ask("Which ones? (comma-separated, Enter for all)", "")
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
     let releases: usize = loop {
         match ask("How many of the newest releases to keep per project?", "1").parse() {
             Ok(n) if n >= 1 => break n,
@@ -151,7 +145,6 @@ fn first_time(config_path: &Path) -> Result<()> {
         archive_root: &archive_root,
         starred_user: starred_user.as_ref().map(|u| u.as_deref()),
         repos: &repos,
-        only_os: &only_os,
         releases,
         prune,
     });
@@ -237,7 +230,6 @@ pub struct Answers<'a> {
     /// None = starred off; Some(None) = the logged-in account; Some(Some(u)) = user u.
     pub starred_user: Option<Option<&'a str>>,
     pub repos: &'a [String],
-    pub only_os: &'a [String],
     pub releases: usize,
     pub prune: bool,
 }
@@ -260,13 +252,7 @@ pub fn build_config(a: &Answers) -> String {
         t.push_str(&format!("# keep_versions = {}   # uncomment to delete older releases\n", a.releases));
     }
     t.push_str("include_prereleases = false\n");
-    t.push_str("exclude = [\"*.sbom.json\", \"*.spdx.json\", \"*.intoto.jsonl\"]\n");
-    if a.only_os.is_empty() {
-        t.push_str("# only_os = [\"Windows\", \"Linux\"]   # uncomment to keep only some systems\n");
-    } else {
-        let list: Vec<String> = a.only_os.iter().map(|s| q(s)).collect();
-        t.push_str(&format!("only_os = [{}]\n", list.join(", ")));
-    }
+    t.push_str("# exclude = [\"*.sig\"]   # wildcard patterns of files to skip (default: download everything)\n");
     t.push_str("\n[starred]\n");
     match a.starred_user {
         None => t.push_str("enabled = false\n"),
@@ -331,19 +317,16 @@ mod tests {
     #[test]
     fn generated_config_parses() {
         let repos = vec!["BurntSushi/ripgrep".to_string()];
-        let os = vec!["Windows".to_string(), "Linux".to_string()];
         let text = build_config(&Answers {
             archive_root: r"\\nas\eric's share",
             starred_user: Some(None),
             repos: &repos,
-            only_os: &os,
             releases: 2,
             prune: true,
         });
         let cfg = Config::parse(&text).unwrap();
         assert_eq!(cfg.archive_root, PathBuf::from(r"\\nas\eric's share"));
         assert_eq!(cfg.defaults.keep_versions, Some(2));
-        assert_eq!(cfg.defaults.only_os, os);
         assert!(cfg.starred_enabled().unwrap().user.is_none());
         assert_eq!(cfg.repos[0].repo, "BurntSushi/ripgrep");
 
@@ -351,12 +334,11 @@ mod tests {
             archive_root: "/mnt/x",
             starred_user: Some(Some("someone")),
             repos: &[],
-            only_os: &[],
             releases: 1,
             prune: false,
         });
         let cfg = Config::parse(&text).unwrap();
         assert_eq!(cfg.starred_enabled().unwrap().user.as_deref(), Some("someone"));
-        assert!(cfg.defaults.only_os.is_empty() && cfg.defaults.keep_versions.is_none());
+        assert!(cfg.defaults.exclude.is_empty() && cfg.defaults.keep_versions.is_none());
     }
 }

@@ -1,6 +1,5 @@
-//! The archiving run: fetch releases, file assets into <root>/<project>/<OS>/<tag>/.
+//! The archiving run: fetch releases and save all their files into <root>/<project>/<tag>/.
 
-use crate::classify::classify;
 use crate::config::Effective;
 use crate::github::{Client, Release};
 use crate::util::{glob_match, sanitize};
@@ -12,7 +11,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = ".github-release-archiver.json";
-pub const SOURCE_FOLDER: &str = "Source";
 
 #[derive(Default, Debug)]
 pub struct Summary {
@@ -54,7 +52,8 @@ pub fn folder_owner(project_dir: &Path) -> Option<String> {
 #[derive(Default, Serialize, Deserialize)]
 struct ReleaseState {
     published_at: String,
-    /// Folders relative to the project folder, e.g. "Windows/v1.2.0".
+    /// Folders relative to the project folder, e.g. "v1.2.0". Versions before
+    /// 0.5 used "<OS>/<tag>"; `migrate_layout` converts those.
     dirs: BTreeSet<String>,
 }
 
@@ -119,25 +118,26 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
     }
 
     let mut state = State::load(&project_dir);
+    if !dry_run {
+        migrate_layout(&mut state, &project_dir, &rc.repo);
+    }
     for rel in &releases {
         let tag = sanitize(&rel.tag_name);
         let mut dirs = BTreeSet::new();
 
         for asset in &rel.assets {
-            let os = sanitize(&classify(&asset.name, &opts.os_rules));
-            if !wanted_asset(&asset.name, &os, opts) {
+            if !wanted_asset(&asset.name, opts) {
                 continue;
             }
-            let rel_dir = format!("{os}/{tag}");
-            let dest = project_dir.join(&os).join(&tag).join(sanitize(&asset.name));
-            dirs.insert(rel_dir);
+            let dest = project_dir.join(&tag).join(sanitize(&asset.name));
+            dirs.insert(tag.clone());
             fetch(client, summary, dry_run, &rc.repo, &dest, &asset.url, "application/octet-stream", Some(asset.size), asset.digest.as_deref());
         }
 
         if opts.include_source {
             if let Some(url) = &rel.zipball_url {
-                let dest = project_dir.join(SOURCE_FOLDER).join(&tag).join(sanitize(&format!("{project}-{}.zip", rel.tag_name)));
-                dirs.insert(format!("{SOURCE_FOLDER}/{tag}"));
+                let dest = project_dir.join(&tag).join(sanitize(&format!("{project}-{}-source.zip", rel.tag_name)));
+                dirs.insert(tag.clone());
                 // Size isn't known ahead of time for generated archives; skip if present.
                 fetch(client, summary, dry_run, &rc.repo, &dest, url, "application/vnd.github+json", None, None);
             }
@@ -173,10 +173,53 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
     Ok(())
 }
 
-fn wanted_asset(name: &str, os: &str, opts: &Effective) -> bool {
+fn wanted_asset(name: &str, opts: &Effective) -> bool {
     (opts.include.is_empty() || opts.include.iter().any(|p| glob_match(p, name)))
         && !opts.exclude.iter().any(|p| glob_match(p, name))
-        && (opts.only_os.is_empty() || opts.only_os.iter().any(|o| o.eq_ignore_ascii_case(os)))
+}
+
+/// Versions before 0.5 sorted files into <OS>/<tag>/ (plus Source/<tag>/).
+/// Moves those recorded folders' files into <tag>/, so nothing is downloaded
+/// twice. Only folders listed in the state file are touched.
+fn migrate_layout(state: &mut State, project_dir: &Path, repo: &str) {
+    for rel in state.releases.values_mut() {
+        let old: Vec<String> = rel.dirs.iter().filter(|d| Path::new(d).components().count() == 2).cloned().collect();
+        for d in old {
+            if !is_safe_relative(&d) {
+                continue;
+            }
+            let src = project_dir.join(&d);
+            let Some(tag) = Path::new(&d).file_name().map(|t| t.to_string_lossy().to_string()) else { continue };
+            let dest = project_dir.join(&tag);
+            if src.is_dir() {
+                if let Err(e) = move_contents(&src, &dest) {
+                    warn!("{repo}: couldn't move {} to {}: {e}", src.display(), dest.display());
+                    continue;
+                }
+                info!("{repo}: moved {} to {}", src.display(), dest.display());
+                let _ = fs::remove_dir(&src); // fails (harmlessly) if a conflicting file was left
+                if let Some(os_dir) = src.parent() {
+                    let _ = fs::remove_dir(os_dir); // only if now empty
+                }
+            }
+            rel.dirs.remove(&d);
+            rel.dirs.insert(tag);
+        }
+    }
+}
+
+fn move_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        if !target.exists() {
+            fs::rename(entry.path(), &target)?;
+        } else if fs::metadata(&target)?.len() == entry.metadata()?.len() {
+            fs::remove_file(entry.path())?; // same file already in place
+        } // else: leave it where it is rather than overwrite anything
+    }
+    Ok(())
 }
 
 /// Writes the repo's README into the project folder when it's new or changed.
@@ -261,8 +304,8 @@ fn prune(state: &mut State, project_dir: &Path, keep: usize, repo: &str) -> usiz
             match fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     info!("{repo}: removed old release folder {}", dir.display());
-                    // Tidy up an OS folder left empty.
-                    if let Some(parent) = dir.parent() {
+                    // Tidy up a pre-0.5 OS folder left empty.
+                    if let Some(parent) = dir.parent().filter(|p| *p != project_dir) {
                         let _ = fs::remove_dir(parent);
                     }
                 }
@@ -275,9 +318,12 @@ fn prune(state: &mut State, project_dir: &Path, keep: usize, repo: &str) -> usiz
 }
 
 /// Guards against a hand-edited state file pointing outside the project folder.
+/// "<tag>", or "<OS>/<tag>" from versions before 0.5.
 fn is_safe_relative(p: &str) -> bool {
     let path = Path::new(p);
-    path.components().count() == 2 && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+    (1..=2).contains(&path.components().count())
+        && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+        && p != STATE_FILE
 }
 
 pub fn human(bytes: u64) -> String {
@@ -297,11 +343,34 @@ mod tests {
 
     #[test]
     fn safe_relative_paths() {
+        assert!(is_safe_relative("v1.0"));
         assert!(is_safe_relative("Windows/v1.0"));
         assert!(!is_safe_relative("../x"));
         assert!(!is_safe_relative("Windows/../../x"));
         assert!(!is_safe_relative("/etc/x"));
-        assert!(!is_safe_relative("Windows"));
+        assert!(!is_safe_relative("a/b/c"));
+        assert!(!is_safe_relative(STATE_FILE));
+    }
+
+    #[test]
+    fn migrates_old_os_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        for (d, f) in [("Windows/v1", "a.exe"), ("Linux/v1", "a.tar.gz"), ("Source/v1", "src.zip")] {
+            fs::create_dir_all(p.join(d)).unwrap();
+            fs::write(p.join(d).join(f), f).unwrap();
+        }
+        let mut state = State::default();
+        state.releases.insert(
+            "v1".into(),
+            ReleaseState { published_at: "2024".into(), dirs: ["Windows/v1", "Linux/v1", "Source/v1"].map(String::from).into() },
+        );
+        migrate_layout(&mut state, p, "t/t");
+        for f in ["a.exe", "a.tar.gz", "src.zip"] {
+            assert!(p.join("v1").join(f).is_file(), "{f}");
+        }
+        assert!(!p.join("Windows").exists() && !p.join("Linux").exists() && !p.join("Source").exists());
+        assert_eq!(state.releases["v1"].dirs.iter().collect::<Vec<_>>(), ["v1"]);
     }
 
     #[test]
@@ -317,13 +386,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State::default();
         for (tag, date) in [("v1", "2024-01-01T00:00:00Z"), ("v2", "2024-02-01T00:00:00Z"), ("v3", "2024-03-01T00:00:00Z")] {
-            let rel = format!("Linux/{tag}");
+            let rel = tag.to_string();
             fs::create_dir_all(dir.path().join(&rel)).unwrap();
             state.releases.insert(tag.into(), ReleaseState { published_at: date.into(), dirs: [rel].into() });
         }
         assert_eq!(prune(&mut state, dir.path(), 2, "t/t"), 1);
-        assert!(!dir.path().join("Linux/v1").exists());
-        assert!(dir.path().join("Linux/v2").exists() && dir.path().join("Linux/v3").exists());
+        assert!(!dir.path().join("v1").exists());
+        assert!(dir.path().join("v2").exists() && dir.path().join("v3").exists());
         assert_eq!(state.releases.keys().collect::<Vec<_>>(), ["v2", "v3"]);
     }
 }

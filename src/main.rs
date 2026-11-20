@@ -1,6 +1,5 @@
 mod archive;
 mod auth;
-mod classify;
 mod config;
 mod github;
 mod logging;
@@ -18,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// Archives GitHub release files into <root>/<Project>/<OS>/<tag>/ folders.
+/// Archives GitHub release files into <root>/<Project>/<version>/ folders.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -69,11 +68,6 @@ enum Command {
     },
     /// Keep running, checking every `interval_minutes`
     Watch,
-    /// Show which OS folder each file name would be sorted into
-    Classify {
-        #[arg(required = true)]
-        names: Vec<String>,
-    },
     /// Manage the Windows Task Scheduler job
     #[command(subcommand)]
     Task(TaskCmd),
@@ -164,13 +158,6 @@ fn real_main(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::Watch => watch(&config_path)?,
-        Command::Classify { names } => {
-            // The config is optional here; use its os_rules if it loads.
-            let rules = Config::load(&config_path).map(|c| c.os_rules).unwrap_or_default();
-            for n in names {
-                println!("{:<10} {n}", classify::classify(&n, &rules));
-            }
-        }
         Command::Task(cmd) => task(cmd, &config_path, cli.log_file.as_deref())?,
     }
     Ok(ExitCode::SUCCESS)
@@ -317,7 +304,7 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
 fn explicit_targets(cfg: &Config) -> Vec<archive::Target> {
     cfg.repos
         .iter()
-        .map(|r| archive::Target { repo: r.repo.clone(), folder: cfg.project_folder(r), opts: cfg.effective(&r.options, &r.os_rules) })
+        .map(|r| archive::Target { repo: r.repo.clone(), folder: cfg.project_folder(r), opts: cfg.effective(&r.options) })
         .collect()
 }
 

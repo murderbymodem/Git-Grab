@@ -26,9 +26,6 @@ pub struct Config {
     pub interval_minutes: u64,
     #[serde(flatten)]
     pub defaults: RepoOptions,
-    /// Rules applied to every repo, before the built-in OS detection.
-    #[serde(default)]
-    pub os_rules: Vec<OsRule>,
     /// Also archive the repos starred by an account.
     #[serde(default)]
     pub starred: Option<StarredConfig>,
@@ -52,18 +49,8 @@ pub struct RepoOptions {
     /// Skip assets matching any of these wildcard patterns.
     #[serde(default)]
     pub exclude: Vec<String>,
-    /// Only download assets classified into these OS folders (empty = all).
-    #[serde(default)]
-    pub only_os: Vec<String>,
     /// Keep a copy of the repo's README in the project folder.
     pub save_readme: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct OsRule {
-    pub pattern: String,
-    pub os: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,8 +61,6 @@ pub struct RepoConfig {
     pub folder: Option<String>,
     #[serde(flatten)]
     pub options: RepoOptions,
-    #[serde(default)]
-    pub os_rules: Vec<OsRule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,9 +90,7 @@ pub struct Effective {
     pub keep_versions: Option<usize>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
-    pub only_os: Vec<String>,
     pub save_readme: bool,
-    pub os_rules: Vec<OsRule>,
 }
 
 fn default_api_url() -> String {
@@ -121,17 +104,25 @@ fn yes() -> bool {
 }
 
 const OPTION_KEYS: &[&str] =
-    &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "only_os", "save_readme"];
+    &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "save_readme"];
 const TOP_KEYS: &[&str] = &[
-    "archive_root", "github_token", "api_url", "oauth_client_id", "interval_minutes", "os_rules", "starred", "repo",
+    "archive_root", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo",
 ];
-const REPO_KEYS: &[&str] = &["repo", "folder", "os_rules"];
+const REPO_KEYS: &[&str] = &["repo", "folder"];
+/// Settings from older versions that are now ignored (warned about, not rejected).
+const RETIRED_KEYS: &[&str] = &["only_os", "os_rules"];
 const STARRED_KEYS: &[&str] = &["enabled", "user", "ignore", "include_forks", "include_archived"];
 
 /// Rejects misspelled keys, which serde would otherwise silently ignore.
 fn check_unknown_keys(text: &str) -> Result<()> {
     let table: toml::Table = toml::from_str(text)?;
-    let known = |k: &str, extra: &[&str]| OPTION_KEYS.contains(&k) || extra.contains(&k);
+    let known = |k: &str, extra: &[&str]| {
+        if RETIRED_KEYS.contains(&k) {
+            log::warn!("config setting \"{k}\" is no longer used (files are no longer sorted by OS); ignoring it");
+            return true;
+        }
+        OPTION_KEYS.contains(&k) || extra.contains(&k)
+    };
     for k in table.keys() {
         if !known(k, TOP_KEYS) {
             bail!("unknown setting \"{k}\" in config");
@@ -233,14 +224,12 @@ impl Config {
     }
 
     /// Merges `layer` (per-repo or [starred] options) over the global defaults.
-    pub fn effective(&self, layer: &RepoOptions, repo_rules: &[OsRule]) -> Effective {
+    pub fn effective(&self, layer: &RepoOptions) -> Effective {
         let d = &self.defaults;
         let o = layer;
         let pick = |a: &Vec<String>, b: &Vec<String>| if a.is_empty() { b.clone() } else { a.clone() };
         let mut exclude = d.exclude.clone();
         exclude.extend(o.exclude.iter().cloned());
-        let mut os_rules = repo_rules.to_vec();
-        os_rules.extend(self.os_rules.iter().cloned());
         Effective {
             releases: o.releases.or(d.releases).unwrap_or(1),
             include_prereleases: o.include_prereleases.or(d.include_prereleases).unwrap_or(false),
@@ -248,9 +237,7 @@ impl Config {
             keep_versions: o.keep_versions.or(d.keep_versions),
             include: pick(&o.include, &d.include),
             exclude,
-            only_os: pick(&o.only_os, &d.only_os),
             save_readme: o.save_readme.or(d.save_readme).unwrap_or(true),
-            os_rules,
         }
     }
 }
@@ -286,15 +273,20 @@ mod tests {
             "#,
         )
         .unwrap();
-        let a = cfg.effective(&cfg.repos[0].options, &cfg.repos[0].os_rules);
+        let a = cfg.effective(&cfg.repos[0].options);
         assert_eq!(a.releases, 5);
         assert_eq!(a.exclude, vec!["*.sig", "*.txt"]);
-        assert_eq!(cfg.effective(&cfg.repos[1].options, &[]).releases, 3);
+        assert_eq!(cfg.effective(&cfg.repos[1].options).releases, 3);
         let s = cfg.starred_enabled().unwrap();
-        assert_eq!(cfg.effective(&s.options, &[]).releases, 1);
+        assert_eq!(cfg.effective(&s.options).releases, 1);
         assert_eq!(s.ignore, ["big/*"]);
         assert_eq!(cfg.project_folder(&cfg.repos[0]), "b");
         assert_eq!(cfg.project_folder(&cfg.repos[1]), "Dee");
+    }
+
+    #[test]
+    fn accepts_retired_settings() {
+        Config::parse("archive_root = \"/x\"\nonly_os = [\"Windows\"]\n[[os_rules]]\npattern = \"*\"\nos = \"X\"").unwrap();
     }
 
     #[test]

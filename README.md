@@ -1,22 +1,31 @@
 # github-release-archiver
 
 Checks GitHub repositories, including everything you've starred, for new
-releases and archives their files on a network share, sorted by project and
-operating system:
+releases and archives every file from each release on a network share, one
+folder per project and one per version:
 
 ```
 \\nas\software\
 ├── ripgrep\
 │   ├── README.md
-│   ├── Windows\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
-│   ├── Linux\14.1.0\ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
-│   ├── Linux\14.1.0\ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
-│   ├── Linux\14.1.0\ripgrep_14.1.0-1_amd64.deb
-│   └── macOS\14.1.0\ripgrep-14.1.0-aarch64-apple-darwin.tar.gz
+│   ├── 14.1.0\
+│   │   ├── ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+│   │   ├── ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
+│   │   ├── ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
+│   │   ├── ripgrep-14.1.0-aarch64-apple-darwin.tar.gz
+│   │   └── ripgrep_14.1.0-1_amd64.deb
+│   └── 14.0.3\
+│       └── ...
 └── KeePassXC\
-    ├── Windows\2.7.9\KeePassXC-2.7.9-Win64.msi
-    └── Linux\2.7.9\KeePassXC-2.7.9-x86_64.AppImage
+    ├── README.md
+    └── 2.7.9\
+        ├── KeePassXC-2.7.9-Win64.msi
+        └── KeePassXC-2.7.9-x86_64.AppImage
 ```
+
+Version folders use the release's tag name exactly as the project wrote it
+(`v1.2.0`, `1.2.0`, `release-2024.05`, …), with characters Windows doesn't allow
+replaced by `_`.
 
 It's a single program for Windows and Linux.
 
@@ -26,17 +35,16 @@ It's a single program for Windows and Linux.
   archived automatically. You can also follow another account's public stars.
 - **Hourly checks on Windows.** `task install` sets up a Task Scheduler job.
   On Linux, use a systemd timer or cron.
-- **Sorted by OS** from file names: `Windows`, `Linux`, `macOS`, `Android`,
-  `iOS`, `FreeBSD`, `OpenBSD`, `NetBSD`, `Other`. Checksum and signature files
-  go in the same folder as the file they describe. You can add your own rules.
 - **Light on GitHub's rate limit.** Responses are cached, and unchanged data
   comes back as "304 Not Modified", which GitHub doesn't count. Hourly checks
   of hundreds of starred repos stay well within the limit.
 - **Safe downloads.** Each file is written to `name.part`, then its size and
   SHA-256 checksum are checked, and only then is it renamed. Files already in
   the archive are skipped.
-- **Filters:** number of releases, prereleases on or off, include/exclude
-  wildcards, `only_os`, optional source zips, and per-repo settings.
+- **Everything by default.** Every file in a release is saved. Optional
+  `include`/`exclude` wildcards skip files you don't want, and you can choose how
+  many releases to keep, whether to include prereleases, and whether to save
+  source zips, globally or per repo.
 - **README copies.** Each project folder gets a copy of the repo's README, so you
   can tell what a project is. It's refreshed when the README changes on GitHub.
   Turn it off with `save_readme = false`, globally or per repo.
@@ -104,7 +112,6 @@ ignore = ["someorg/*"]         # owner/name wildcards to skip
 include_forks = true
 include_archived = true
 releases = 1                   # settings for starred repos only
-only_os = ["Windows", "Linux"]
 ```
 
 The list is fetched on every run, so a newly starred repo is picked up on the
@@ -189,7 +196,6 @@ The first command saves the token for the `archiver` user. Logs:
 | `login` / `logout` / `status` | Manage the GitHub login and show the current setup |
 | `run [--dry-run]` | Check everything once |
 | `watch` | Keep running, checking every `interval_minutes` and re-reading the config each time |
-| `classify NAME…` | Show which OS folder file names would go in |
 | `task install/run/status/remove` | Windows scheduled task |
 
 Global options: `-c/--config PATH` (or the `GITHUB_RELEASE_ARCHIVER_CONFIG`
@@ -199,19 +205,13 @@ Set `RUST_LOG=debug` for detailed logs.
 
 Every option is explained in [`config.example.toml`](config.example.toml).
 
-## How the OS folder is chosen
+## Upgrading from 0.4 or earlier
 
-1. Your `os_rules`: per-repo rules first, then global ones, in order. The first
-   matching wildcard wins.
-2. Built-in guesses from words in the file name and its extension, checked in
-   this order (order matters, since `aarch64-linux-android` contains "linux"):
-   - **Android**: `android`, `.apk`, `.aab`
-   - **iOS**: `ios`, `.ipa`
-   - **macOS**: `darwin`, `apple`, `macos`, `osx`, `mac`, `.dmg`, `.pkg`
-   - **Windows**: `windows`, `win`, `win32`, `win64`, `msvc`, `mingw`, `.exe`, `.msi`, `.msix`
-   - **FreeBSD / OpenBSD / NetBSD**
-   - **Linux**: `linux*`, `gnu`, `musl`, distro names, `.deb`, `.rpm`, `.AppImage`, `.flatpak`, `.snap`
-   - **Other**: anything else
+Earlier versions sorted files into OS folders (`ripgrep\Windows\14.1.0\`). The
+first run of 0.5 moves those files into `ripgrep\14.1.0\` and removes the empty
+OS folders, so nothing is downloaded again. It only touches folders it recorded
+itself. The old `only_os` and `os_rules` settings are ignored with a warning, and
+can be deleted from the config.
 
 ## Building
 

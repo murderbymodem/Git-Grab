@@ -17,14 +17,14 @@ pub fn build(cfg: &Config, client: &Client) -> Result<Vec<Target>> {
         let folder = cfg.project_folder(r);
         used_folders.insert(folder.to_lowercase());
         listed.insert(r.repo.to_lowercase());
-        targets.push(Target { repo: r.repo.clone(), folder, opts: cfg.effective(&r.options, &r.os_rules) });
+        targets.push(Target { repo: r.repo.clone(), folder, opts: cfg.effective(&r.options) });
     }
 
     let Some(s) = cfg.starred_enabled() else { return Ok(targets) };
     let mut starred = client.starred(s.user.as_deref())?;
     // Sorted, so folder-name conflicts resolve the same way every run.
     starred.sort_by_key(|r| r.full_name.to_lowercase());
-    let opts = cfg.effective(&s.options, &[]);
+    let opts = cfg.effective(&s.options);
     let mut added = 0;
     for r in starred {
         let full = r.full_name;

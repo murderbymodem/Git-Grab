@@ -1,7 +1,7 @@
 # github-release-archiver
 
 Rust CLI (Windows + Linux) that archives GitHub release assets into
-`<archive_root>/<Project>/<OS>/<tag>/<file>`.
+`<archive_root>/<Project>/<tag>/<file>` (all files of each release; no OS sorting).
 
 ## Commits
 
@@ -30,7 +30,6 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - `src/targets.rs`: builds the repo list from `[[repo]]` plus starred repos
 - `src/archive.rs`: download and sort logic, per-project state file, retention
 - `src/github.rs`: REST client with ETag cache, starred list, downloads
-- `src/classify.rs`: OS folder detection from file names
 - `src/auth.rs`: login (token paste or OAuth device flow), token storage
 - `src/setup.rs`: interactive setup wizard and menu (runs when the .exe is double-clicked)
 - `src/wintask.rs`: Windows Task Scheduler XML and `schtasks.exe` calls
