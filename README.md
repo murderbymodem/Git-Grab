@@ -213,10 +213,16 @@ Every option is explained in [`config.example.toml`](config.example.toml).
 cargo build --release
 ```
 
-Download ready-made Windows and Linux programs from the
-[Releases](https://github.com/murderbymodem/github-release-archiver/releases)
-page, or build them yourself. Pushing a `v*` tag builds and publishes them
-automatically (see `.github/workflows/release.yml`).
+Ready-made programs are on the
+[Releases](https://github.com/murderbymodem/github-release-archiver/releases) page:
+
+- `github-release-archiver-<version>-windows-x64.zip` for 64-bit Windows 10/11
+- `github-release-archiver-<version>-linux-x64.tar.gz` for 64-bit Linux. It's a
+  single self-contained file that runs on any distro with nothing to install.
+
+Publishing a release on GitHub (with a new `v*` tag) builds and attaches both
+automatically. To rebuild an existing release, use **Actions → Release → Run
+workflow** (see `.github/workflows/release.yml`).
 
 ## License
 

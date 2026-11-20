@@ -1,43 +1,76 @@
 name: Release
 
+# Runs when a release (and its v* tag) is created on GitHub's Releases page.
+# To rebuild an existing release, use Actions -> Release -> Run workflow.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to (re)build, e.g. v0.2.0"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Make sure the release exists, and clear old files when rebuilding
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            for a in $(gh release view "$TAG" --json assets -q '.assets[].name'); do
+              gh release delete-asset "$TAG" "$a" -y
+            done
+          else
+            gh release create "$TAG" --verify-tag --generate-notes
+          fi
+
   build:
+    needs: prepare
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            file: github-release-archiver.exe
+            platform: windows-x64
+            exe: github-release-archiver.exe
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            file: github-release-archiver
+            target: x86_64-unknown-linux-musl # fully static: runs on any Linux distro
+            platform: linux-x64
+            exe: github-release-archiver
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - if: matrix.os == 'ubuntu-latest'
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --target ${{ matrix.target }}
-      - name: Package
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package and upload
         shell: bash
         run: |
-          name=github-release-archiver-${GITHUB_REF_NAME}-${{ matrix.target }}
-          mkdir "$name"
-          cp "target/${{ matrix.target }}/release/${{ matrix.file }}" README.md LICENSE config.example.toml "$name/"
-          if [ "${{ matrix.os }}" = windows-latest ]; then
-            7z a "$name.zip" "$name" >/dev/null
+          version="${TAG#v}"
+          name="github-release-archiver-${version}-${{ matrix.platform }}"
+          mkdir -p "staging/$name"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md LICENSE config.example.toml "staging/$name/"
+          cd staging
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            archive="$name.zip"
+            7z a "$archive" "$name" >/dev/null
           else
-            tar czf "$name.tar.gz" "$name"
+            archive="$name.tar.gz"
+            tar czf "$archive" "$name"
           fi
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: github-release-archiver-*.*
+          gh release upload "$TAG" "$archive" --clobber
