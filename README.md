@@ -7,6 +7,7 @@ operating system:
 ```
 \\nas\software\
 ├── ripgrep\
+│   ├── README.md
 │   ├── Windows\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
 │   ├── Linux\14.1.0\ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
 │   ├── Linux\14.1.0\ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
@@ -36,6 +37,9 @@ It's a single program for Windows and Linux.
   the archive are skipped.
 - **Filters:** number of releases, prereleases on or off, include/exclude
   wildcards, `only_os`, optional source zips, and per-repo settings.
+- **README copies.** Each project folder gets a copy of the repo's README, so you
+  can tell what a project is. It's refreshed when the README changes on GitHub.
+  Turn it off with `save_readme = false`, globally or per repo.
 - **Retention** (`keep_versions`) only ever deletes folders this tool created.
 
 ## Quick start (Windows)

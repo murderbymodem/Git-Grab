@@ -30,6 +30,9 @@ struct State {
     /// The repo ("owner/name") this project folder belongs to.
     #[serde(default)]
     repo: Option<String>,
+    /// File name of the README copy in the project folder, if one was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    readme: Option<String>,
     releases: BTreeMap<String, ReleaseState>,
 }
 
@@ -158,6 +161,13 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
         if let Some(keep) = opts.keep_versions {
             summary.pruned += prune(&mut state, &project_dir, keep, &rc.repo);
         }
+        // Only for projects that have archived files, so starred repos without
+        // releases don't get folders just for a README.
+        if opts.save_readme && project_dir.is_dir() {
+            if let Err(e) = save_readme(client, &rc.repo, &project_dir, &mut state) {
+                warn!("{}: couldn't save the README: {e:#}", rc.repo);
+            }
+        }
         state.save(&project_dir).context("cannot save state file")?;
     }
     Ok(())
@@ -167,6 +177,35 @@ fn wanted_asset(name: &str, os: &str, opts: &Effective) -> bool {
     (opts.include.is_empty() || opts.include.iter().any(|p| glob_match(p, name)))
         && !opts.exclude.iter().any(|p| glob_match(p, name))
         && (opts.only_os.is_empty() || opts.only_os.iter().any(|o| o.eq_ignore_ascii_case(os)))
+}
+
+/// Writes the repo's README into the project folder when it's new or changed.
+fn save_readme(client: &Client, repo: &str, project_dir: &Path, state: &mut State) -> Result<()> {
+    let Some((name, bytes)) = client.readme(repo)? else { return Ok(()) };
+    let name = sanitize(&name);
+    let dest = project_dir.join(&name);
+    if fs::read(&dest).ok().as_deref() != Some(bytes.as_slice()) {
+        let tmp = project_dir.join(format!("{name}.part"));
+        fs::write(&tmp, &bytes)?;
+        if dest.exists() {
+            fs::remove_file(&dest)?;
+        }
+        fs::rename(&tmp, &dest)?;
+        info!("{repo}: saved {}", dest.display());
+    }
+    // If the README was renamed upstream (README.rst -> README.md), remove the
+    // old copy, but only the one this program recorded.
+    if let Some(old) = state.readme.replace(name.clone()) {
+        if old != name && is_plain_file_name(&old) {
+            let _ = fs::remove_file(project_dir.join(&old));
+        }
+    }
+    Ok(())
+}
+
+fn is_plain_file_name(name: &str) -> bool {
+    let mut c = Path::new(name).components();
+    matches!((c.next(), c.next()), (Some(std::path::Component::Normal(_)), None)) && name != STATE_FILE
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -263,6 +302,14 @@ mod tests {
         assert!(!is_safe_relative("Windows/../../x"));
         assert!(!is_safe_relative("/etc/x"));
         assert!(!is_safe_relative("Windows"));
+    }
+
+    #[test]
+    fn plain_file_names() {
+        assert!(is_plain_file_name("README.md"));
+        assert!(!is_plain_file_name("../README.md"));
+        assert!(!is_plain_file_name("Windows/README.md"));
+        assert!(!is_plain_file_name(STATE_FILE));
     }
 
     #[test]

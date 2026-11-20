@@ -55,6 +55,8 @@ pub struct RepoOptions {
     /// Only download assets classified into these OS folders (empty = all).
     #[serde(default)]
     pub only_os: Vec<String>,
+    /// Keep a copy of the repo's README in the project folder.
+    pub save_readme: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -104,6 +106,7 @@ pub struct Effective {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub only_os: Vec<String>,
+    pub save_readme: bool,
     pub os_rules: Vec<OsRule>,
 }
 
@@ -118,7 +121,7 @@ fn yes() -> bool {
 }
 
 const OPTION_KEYS: &[&str] =
-    &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "only_os"];
+    &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "only_os", "save_readme"];
 const TOP_KEYS: &[&str] = &[
     "archive_root", "github_token", "api_url", "oauth_client_id", "interval_minutes", "os_rules", "starred", "repo",
 ];
@@ -246,6 +249,7 @@ impl Config {
             include: pick(&o.include, &d.include),
             exclude,
             only_os: pick(&o.only_os, &d.only_os),
+            save_readme: o.save_readme.or(d.save_readme).unwrap_or(true),
             os_rules,
         }
     }

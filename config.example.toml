@@ -41,6 +41,9 @@ include_source = false
 exclude = ["*.sbom.json", "*.spdx.json", "*.intoto.jsonl"]
 # Only keep files sorted into these OS folders. Leave out for all.
 # only_os = ["Windows", "Linux", "Android"]
+# Keep a copy of each project's README (e.g. ripgrep\README.md) so you can tell
+# what a project is. Updated when it changes on GitHub.
+save_readme = true
 
 # Built-in OS folders: Windows, Linux, macOS, Android, iOS, FreeBSD, OpenBSD,
 # NetBSD, and Other (checksum lists, .jar files, anything without OS hints).

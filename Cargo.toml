@@ -1,6 +1,6 @@
 [package]
 name = "github-release-archiver"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Watches GitHub repositories (or your starred repos) for new releases and archives their files into per-project, per-OS folders"
 license = "GPL-3.0-only"
@@ -8,6 +8,7 @@ repository = "https://github.com/murderbymodem/github-release-archiver"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 env_logger = "0.11"

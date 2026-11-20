@@ -4,6 +4,8 @@
 //! limit. That keeps hourly checks of many repos cheap.
 
 use anyhow::{anyhow, bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use log::debug;
 use reqwest::blocking::{Client as Http, Response};
 use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, LINK};
@@ -48,6 +50,15 @@ pub struct RepoInfo {
     pub fork: bool,
     #[serde(default)]
     pub archived: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct Readme {
+    name: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    encoding: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,8 +108,8 @@ impl Client {
     }
 
     /// GET a JSON API URL, using the ETag cache. Returns the body and the
-    /// "next page" link, if any.
-    fn get_json_raw(&self, url: &str) -> Result<(String, Option<String>)> {
+    /// "next page" link, if any, or `None` if GitHub answers 404.
+    fn get_json_raw(&self, url: &str) -> Result<Option<(String, Option<String>)>> {
         let cache_file = self.cache_dir.as_ref().map(|d| d.join(format!("{}.json", &hex::encode(Sha256::digest(url))[..24])));
         let cached: Option<CacheEntry> =
             cache_file.as_ref().and_then(|f| fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str(&t).ok());
@@ -107,8 +118,11 @@ impl Client {
         if resp.status() == StatusCode::NOT_MODIFIED {
             if let Some(c) = cached {
                 debug!("not modified: {url}");
-                return Ok((c.body, c.next));
+                return Ok(Some((c.body, c.next)));
             }
+        }
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
         }
         let resp = check_status(resp, url)?;
         let etag = resp.headers().get(ETAG).and_then(|v| v.to_str().ok()).map(str::to_string);
@@ -118,13 +132,36 @@ impl Client {
             let entry = CacheEntry { etag, next: next.clone(), body: body.clone() };
             let _ = fs::write(f, serde_json::to_string(&entry).unwrap_or_default());
         }
-        Ok((body, next))
+        Ok(Some((body, next)))
+    }
+
+    /// Like `get_json`, but a 404 gives `Ok(None)`.
+    fn get_json_opt<T: DeserializeOwned>(&self, url: &str) -> Result<Option<(T, Option<String>)>> {
+        match self.get_json_raw(url)? {
+            None => Ok(None),
+            Some((body, next)) => {
+                let v = serde_json::from_str(&body).with_context(|| format!("unexpected response from {url}"))?;
+                Ok(Some((v, next)))
+            }
+        }
     }
 
     fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<(T, Option<String>)> {
-        let (body, next) = self.get_json_raw(url)?;
-        let v = serde_json::from_str(&body).with_context(|| format!("unexpected response from {url}"))?;
-        Ok((v, next))
+        self.get_json_opt(url)?
+            .ok_or_else(|| anyhow!("not found: {url} (check the name; private repos need a token)"))
+    }
+
+    /// The repo's README (name and file contents), or `None` if it has none.
+    pub fn readme(&self, repo: &str) -> Result<Option<(String, Vec<u8>)>> {
+        let url = format!("{}/repos/{repo}/readme", self.api_url);
+        let Some((r, _)) = self.get_json_opt::<Readme>(&url)? else { return Ok(None) };
+        if r.encoding != "base64" {
+            bail!("README of {repo} has unexpected encoding \"{}\"", r.encoding);
+        }
+        // GitHub wraps the base64 text in lines.
+        let packed: String = r.content.chars().filter(|c| !c.is_whitespace()).collect();
+        let bytes = BASE64.decode(packed).with_context(|| format!("README of {repo} is not valid base64"))?;
+        Ok(Some((r.name, bytes)))
     }
 
     /// Newest releases first (as GitHub returns them), drafts included.
