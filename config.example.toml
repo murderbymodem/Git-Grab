@@ -1,0 +1,88 @@
+# github-release-archiver configuration
+#
+# Files are saved as:  <archive_root>/<Project>/<OS>/<tag>/<file>
+# e.g.  \\nas\software\ripgrep\Windows\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+
+# Where the archive lives. Use single quotes so backslashes are kept as-is.
+#   Windows share:  archive_root = '\\nas\software'
+#   Linux mount:    archive_root = '/mnt/software'
+archive_root = '/mnt/software'
+
+# GitHub login. The easiest way is to run `github-release-archiver login`, which
+# saves a token (Windows Credential Manager on Windows, a private file on Linux).
+# Logging in raises the API limit from 60 to 5000 requests/hour and lets the tool
+# read your own starred repos. Alternatives: set GITHUB_TOKEN, or put a token here:
+# github_token = "github_pat_..."
+
+# For browser login (`login` shows a code to approve on github.com), set the client
+# ID of a GitHub OAuth App with "Enable Device Flow" ticked. Without it, `login`
+# asks you to paste a token instead.
+# oauth_client_id = "Ov23li..."
+
+# For GitHub Enterprise Server: api_url = "https://github.example.com/api/v3"
+# api_url = "https://api.github.com"
+
+# Minutes between checks when running `github-release-archiver watch`.
+# (On Windows, `task install` sets up an hourly scheduled task instead.)
+interval_minutes = 360
+
+# ---- Defaults for every repo (each can be overridden inside a [[repo]]) ----
+
+# How many of the newest releases to archive.
+releases = 1
+# Include prereleases (betas, release candidates).
+include_prereleases = false
+# Also save GitHub's auto-generated source zip into a "Source" folder.
+include_source = false
+# Delete archived releases beyond the newest N. Leave out to keep everything.
+# Only removes folders this tool created (tracked in <Project>/.github-release-archiver.json).
+# keep_versions = 5
+# Skip files matching these wildcard patterns (* and ?, case-insensitive).
+exclude = ["*.sbom.json", "*.spdx.json", "*.intoto.jsonl"]
+# Only keep files sorted into these OS folders. Leave out for all.
+# only_os = ["Windows", "Linux", "Android"]
+
+# Built-in OS folders: Windows, Linux, macOS, Android, iOS, FreeBSD, OpenBSD,
+# NetBSD, and Other (checksum lists, .jar files, anything without OS hints).
+# Add rules to sort files the guesser gets wrong. Checked in order, before the
+# built-in guess. The folder name can be anything.
+# [[os_rules]]
+# pattern = "*-portable.zip"
+# os = "Windows"
+
+# ---- Starred repos ----
+# Archive every repo starred by an account, in addition to the [[repo]] list.
+# The list is re-read each run, so starring a repo on GitHub adds it automatically.
+# Repos listed under [[repo]] keep their own settings.
+[starred]
+enabled = false
+# user = "someone"          # whose stars; leave out to use the logged-in account
+# ignore = ["someorg/*", "owner/huge-repo"]
+# include_forks = true
+# include_archived = true
+# Settings for starred repos only (override the defaults above):
+# releases = 1
+# only_os = ["Windows", "Linux"]
+
+# ---- Repositories ----
+
+[[repo]]
+repo = "BurntSushi/ripgrep"          # project folder defaults to the repo name: "ripgrep"
+
+[[repo]]
+repo = "PowerShell/PowerShell"
+releases = 2
+keep_versions = 2
+include = ["*.msi", "*.zip", "*.deb", "*.rpm", "*.tar.gz"]
+
+[[repo]]
+repo = "keepassxreboot/keepassxc"
+folder = "KeePassXC"                 # custom project folder name
+only_os = ["Windows", "Linux"]
+
+# Repo-specific sorting rules are checked before the global ones.
+# [[repo]]
+# repo = "owner/name"
+# [[repo.os_rules]]
+# pattern = "*-x64.zip"
+# os = "Windows"

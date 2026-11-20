@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            file: github-release-archiver.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            file: github-release-archiver
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name=github-release-archiver-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/${{ matrix.file }}" README.md LICENSE config.example.toml "$name/"
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: github-release-archiver-*.*

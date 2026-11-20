@@ -1,0 +1,32 @@
+[package]
+name = "github-release-archiver"
+version = "0.2.0"
+edition = "2021"
+description = "Watches GitHub repositories (or your starred repos) for new releases and archives their files into per-project, per-OS folders"
+license = "GPL-3.0-only"
+repository = "https://github.com/murderbymodem/github-release-archiver"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5"
+env_logger = "0.11"
+hex = "0.4"
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
