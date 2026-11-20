@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const STATE_FILE: &str = ".github-release-archiver.json";
+pub const STATE_FILE: &str = ".github-release-archiver.json";
 
 #[derive(Default, Debug)]
 pub struct Summary {
@@ -19,6 +19,21 @@ pub struct Summary {
     pub failed: usize,
     pub pruned: usize,
     pub bytes: u64,
+    pub mirror: crate::mirror::Stats,
+}
+
+/// What a project's state file records: release folders and the README copy.
+pub struct Recorded {
+    pub dirs: BTreeSet<String>,
+    pub readme: Option<String>,
+}
+
+/// Reads the state file of a project folder, if there is one.
+pub fn recorded(project_dir: &Path) -> Option<Recorded> {
+    let text = fs::read_to_string(project_dir.join(STATE_FILE)).ok()?;
+    let state: State = serde_json::from_str(&text).ok()?;
+    let dirs = state.releases.into_values().flat_map(|r| r.dirs).collect();
+    Some(Recorded { dirs, readme: state.readme })
 }
 
 /// Records which releases this tool archived for a project, so retention only
@@ -85,14 +100,32 @@ impl State {
     }
 }
 
-pub fn run(root: &Path, targets: &[Target], client: &Client, dry_run: bool, summary: &mut Summary) {
+pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], client: &Client, dry_run: bool, summary: &mut Summary) {
     if targets.is_empty() {
         warn!("no repos to check: add [[repo]] entries or enable [starred] in the config");
     }
+    // An unreachable mirror is skipped for this run, not an error: the next
+    // run copies whatever it missed.
+    let mirrors: Vec<&PathBuf> = mirrors
+        .iter()
+        .filter(|m| {
+            let ok = m.is_dir();
+            if !ok {
+                warn!("mirror {} is not reachable; skipping it this time (it will catch up later)", m.display());
+            }
+            ok
+        })
+        .collect();
     for t in targets {
         if let Err(e) = archive_repo(root, t, client, dry_run, summary) {
             warn!("{}: {e:#}", t.repo);
             summary.failed += 1;
+        }
+        // Mirror even if checking GitHub failed: what's archived is still good.
+        for m in &mirrors {
+            if let Err(e) = crate::mirror::sync_project(&root.join(&t.folder), &m.join(&t.folder), dry_run, &mut summary.mirror) {
+                warn!("{}: copying to mirror {} failed: {e:#}", t.repo, m.display());
+            }
         }
     }
 }

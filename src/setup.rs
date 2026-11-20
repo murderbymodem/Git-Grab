@@ -56,26 +56,25 @@ fn menu(config_path: &Path) -> Result<()> {
 fn first_time(config_path: &Path) -> Result<()> {
     // 1. Where to save
     println!("Step 1 of 5: Where should releases be saved?");
-    println!("  A network share like \\\\nas\\software, or a local folder like D:\\Software.");
+    println!("  A local folder like D:\\Software, or a network share like \\\\nas\\software.");
     let archive_root = loop {
-        let answer = ask("Folder", "");
-        if answer.is_empty() {
-            continue;
-        }
-        let p = PathBuf::from(&answer);
-        if p.is_dir() {
-            break answer;
-        }
-        println!("  That folder doesn't exist or can't be reached.");
-        if yes_no("  Create it?", true) {
-            match std::fs::create_dir_all(&p) {
-                Ok(()) => break answer,
-                Err(e) => println!("  Couldn't create it: {e}"),
-            }
-        } else if yes_no("  Use it anyway (e.g. the share isn't connected right now)?", false) {
-            break answer;
+        if let Some(f) = ask_folder("Folder") {
+            break f;
         }
     };
+    println!("\n  You can also keep a copy in a second place, e.g. a local archive mirrored");
+    println!("  to a network share. Files are downloaded once and then copied there.");
+    let mut mirrors: Vec<String> = Vec::new();
+    loop {
+        let label = if mirrors.is_empty() { "Second folder (Enter to skip)" } else { "Another folder (Enter when done)" };
+        match ask_folder(label) {
+            Some(f) if f.eq_ignore_ascii_case(&archive_root) || mirrors.iter().any(|m| m.eq_ignore_ascii_case(&f)) => {
+                println!("  That folder is already used.");
+            }
+            Some(f) => mirrors.push(f),
+            None => break,
+        }
+    }
 
     // 2. Login
     println!("\nStep 2 of 5: Log in to GitHub");
@@ -143,6 +142,7 @@ fn first_time(config_path: &Path) -> Result<()> {
 
     let text = build_config(&Answers {
         archive_root: &archive_root,
+        mirrors: &mirrors,
         starred_user: starred_user.as_ref().map(|u| u.as_deref()),
         repos: &repos,
         releases,
@@ -182,6 +182,29 @@ fn first_time(config_path: &Path) -> Result<()> {
         println!("The program is installed at {}", e.display());
     }
     Ok(())
+}
+
+/// Asks for a folder and checks it can be reached. `None` = left blank.
+fn ask_folder(label: &str) -> Option<String> {
+    loop {
+        let answer = ask(label, "");
+        if answer.is_empty() {
+            return None;
+        }
+        let p = PathBuf::from(&answer);
+        if p.is_dir() {
+            return Some(answer);
+        }
+        println!("  That folder doesn't exist or can't be reached.");
+        if yes_no("  Create it?", true) {
+            match std::fs::create_dir_all(&p) {
+                Ok(()) => return Some(answer),
+                Err(e) => println!("  Couldn't create it: {e}"),
+            }
+        } else if yes_no("  Use it anyway (e.g. the share isn't connected right now)?", false) {
+            return Some(answer);
+        }
+    }
 }
 
 fn schedule(config_path: &Path, exe: Option<PathBuf>) -> Result<()> {
@@ -227,6 +250,7 @@ fn open_editor(path: &Path) -> Result<()> {
 
 pub struct Answers<'a> {
     pub archive_root: &'a str,
+    pub mirrors: &'a [String],
     /// None = starred off; Some(None) = the logged-in account; Some(Some(u)) = user u.
     pub starred_user: Option<Option<&'a str>>,
     pub repos: &'a [String],
@@ -242,7 +266,14 @@ fn q(s: &str) -> String {
 pub fn build_config(a: &Answers) -> String {
     let mut t = String::new();
     t.push_str("# Created by github-release-archiver setup. All options: see config.example.toml\n\n");
-    t.push_str(&format!("archive_root = {}\n\n", q(a.archive_root)));
+    t.push_str(&format!("archive_root = {}\n", q(a.archive_root)));
+    if a.mirrors.is_empty() {
+        t.push_str("# mirrors = ['\\\\nas\\software']   # extra folders that get a copy of the archive\n\n");
+    } else {
+        let list: Vec<String> = a.mirrors.iter().map(|m| q(m)).collect();
+        t.push_str("# Extra folders that get a copy of the archive\n");
+        t.push_str(&format!("mirrors = [{}]\n\n", list.join(", ")));
+    }
     t.push_str("# How many of the newest releases to archive per project\n");
     t.push_str(&format!("releases = {}\n", a.releases));
     if a.prune {
@@ -319,6 +350,7 @@ mod tests {
         let repos = vec!["BurntSushi/ripgrep".to_string()];
         let text = build_config(&Answers {
             archive_root: r"\\nas\eric's share",
+            mirrors: &[r"D:\Archive".to_string()],
             starred_user: Some(None),
             repos: &repos,
             releases: 2,
@@ -326,12 +358,14 @@ mod tests {
         });
         let cfg = Config::parse(&text).unwrap();
         assert_eq!(cfg.archive_root, PathBuf::from(r"\\nas\eric's share"));
+        assert_eq!(cfg.mirrors, [PathBuf::from(r"D:\Archive")]);
         assert_eq!(cfg.defaults.keep_versions, Some(2));
         assert!(cfg.starred_enabled().unwrap().user.is_none());
         assert_eq!(cfg.repos[0].repo, "BurntSushi/ripgrep");
 
         let text = build_config(&Answers {
             archive_root: "/mnt/x",
+            mirrors: &[],
             starred_user: Some(Some("someone")),
             repos: &[],
             releases: 1,

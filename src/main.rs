@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod github;
 mod logging;
+mod mirror;
 mod setup;
 mod targets;
 mod util;
@@ -177,10 +178,9 @@ fn init(path: &Path, archive_root: Option<&str>, force: bool) -> Result<()> {
     }
     let mut text = config::example().to_string();
     if let Some(root) = archive_root {
-        if root.contains('\'') {
-            bail!("archive_root can't contain a single quote");
-        }
-        text = text.replacen("archive_root = '/mnt/software'", &format!("archive_root = '{root}'"), 1);
+        // The real setting starts a line; the same text also appears in a comment.
+        let line = format!("\narchive_root = {}\n", toml::Value::String(root.to_string()));
+        text = text.replacen("\narchive_root = '/mnt/software'\n", &line, 1);
     }
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
@@ -232,6 +232,10 @@ fn status(config_path: &Path) -> Result<()> {
     if let Some(c) = &cfg {
         let ok = if c.archive_root.is_dir() { "reachable" } else { "NOT reachable" };
         println!("Archive root: {} ({ok})", c.archive_root.display());
+        for m in &c.mirrors {
+            let ok = if m.is_dir() { "reachable" } else { "NOT reachable" };
+            println!("Mirror:       {} ({ok})", m.display());
+        }
         println!("Repos:        {} listed", c.repos.len());
         match c.starred_enabled() {
             Some(s) => println!("Starred:      on ({})", s.user.as_deref().unwrap_or("logged-in account")),
@@ -288,7 +292,7 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
             explicit_targets(cfg)
         }
     };
-    archive::run(&cfg.archive_root, &targets, &client, dry_run, &mut s);
+    archive::run(&cfg.archive_root, &cfg.mirrors, &targets, &client, dry_run, &mut s);
     info!(
         "done: {} {}, {} already archived, {} failed, {} old release(s) pruned, {} transferred",
         s.downloaded,
@@ -298,6 +302,15 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
         s.pruned,
         archive::human(s.bytes)
     );
+    if !cfg.mirrors.is_empty() {
+        info!(
+            "mirrors: {} file(s) {}, {} old folder(s) removed, {} copied",
+            s.mirror.copied,
+            if dry_run { "to copy" } else { "copied" },
+            s.mirror.removed,
+            archive::human(s.mirror.bytes)
+        );
+    }
     Ok(s.failed > 0)
 }
 
@@ -376,9 +389,11 @@ fn install_task(
     if auth::resolve(cfg.github_token.as_deref()).is_none() {
         warn!("not logged in: scheduled runs will be limited to 60 API requests/hour. Run `login` first");
     }
-    let root = cfg.archive_root.display().to_string();
-    if run_when_logged_off && !root.starts_with(r"\\") && !root.to_ascii_uppercase().starts_with("C:") {
-        warn!("archive_root is {root}: mapped drive letters don't exist when you're logged off. Use a UNC path like \\\\server\\share");
+    for root in std::iter::once(&cfg.archive_root).chain(&cfg.mirrors) {
+        let root = root.display().to_string();
+        if run_when_logged_off && !root.starts_with(r"\\") && !root.to_ascii_uppercase().starts_with("C:") {
+            warn!("{root}: if this is a mapped network drive, it doesn't exist when you're logged off. Use a UNC path like \\\\server\\share");
+        }
     }
     let (logon, password) = if run_when_logged_off {
         let pw = rpassword::prompt_password(format!("Windows password for {user}: "))?;

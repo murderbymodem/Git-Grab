@@ -8,6 +8,13 @@
 #   Linux mount:    archive_root = '/mnt/software'
 archive_root = '/mnt/software'
 
+# Extra folders that get a full copy of the archive, e.g. keep the main archive
+# on this PC and mirror it to a network share. Files are downloaded once, into
+# archive_root, then copied. A mirror that can't be reached is skipped and
+# catches up on a later run. Old releases removed by keep_versions are removed
+# from mirrors too (only folders this program created).
+# mirrors = ['\\nas\software']
+
 # GitHub login. The easiest way is to run `github-release-archiver login`, which
 # saves a token (Windows Credential Manager on Windows, a private file on Linux).
 # Logging in raises the API limit from 60 to 5000 requests/hour and lets the tool

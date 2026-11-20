@@ -29,6 +29,7 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - `src/config.rs`: TOML config, option merging, unknown-key checks
 - `src/targets.rs`: builds the repo list from `[[repo]]` plus starred repos
 - `src/archive.rs`: download and sort logic, per-project state file, retention
+- `src/mirror.rs`: copies project folders from archive_root to the `mirrors` folders
 - `src/github.rs`: REST client with ETag cache, starred list, downloads
 - `src/auth.rs`: login (token paste or OAuth device flow), token storage
 - `src/setup.rs`: interactive setup wizard and menu (runs when the .exe is double-clicked)

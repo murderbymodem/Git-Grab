@@ -45,6 +45,9 @@ It's a single program for Windows and Linux.
   `include`/`exclude` wildcards skip files you don't want, and you can choose how
   many releases to keep, whether to include prereleases, and whether to save
   source zips, globally or per repo.
+- **Mirrors.** Keep the archive in two (or more) places at once, such as a
+  local drive plus a network share. Files are downloaded once and copied to
+  each mirror. A mirror that's offline catches up on the next run.
 - **README copies.** Each project folder gets a copy of the repo's README, so you
   can tell what a project is. It's refreshed when the README changes on GitHub.
   Turn it off with `save_readme = false`, globally or per repo.
@@ -73,6 +76,28 @@ You can do the same from a terminal: run `github-release-archiver setup`, or the
 individual steps `init`, `login`, `run --dry-run` and `task install`. On Linux,
 the config goes in `~/.config/github-release-archiver/config.toml` and hourly
 checks use a systemd timer (see below).
+
+## Mirrors
+
+```toml
+archive_root = 'D:\Software'          # main archive: downloads go here
+mirrors = ['\\nas\software']         # gets a copy of everything
+```
+
+Each run copies new or changed files from `archive_root` to every mirror, using
+the same `<Project>\<version>\` layout. Copies are written to a temporary file
+and renamed when complete. When `keep_versions` removes an old release from the
+main archive, it's removed from the mirrors too. Like everywhere else, only
+folders this program created are ever deleted. Files you put in a mirror
+yourself are left alone.
+
+If a mirror can't be reached (the NAS is off, or a laptop is away from the
+network), it's skipped with a warning, and the next run copies whatever it
+missed. Adding a mirror to an existing archive copies everything on the next run.
+
+`status` shows whether each mirror is reachable. For the scheduled task with
+`--run-when-logged-off`, use UNC paths (`\\server\share`) rather than mapped
+drive letters.
 
 ## Logging in
 

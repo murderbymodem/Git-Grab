@@ -12,6 +12,9 @@ pub const APP_DIR: &str = "github-release-archiver";
 pub struct Config {
     /// Root folder of the archive: a mounted path or a UNC path (\\server\share\dir).
     pub archive_root: PathBuf,
+    /// Extra folders that get a copy of the archive (e.g. a network share).
+    #[serde(default)]
+    pub mirrors: Vec<PathBuf>,
     /// GitHub token. If unset: GITHUB_TOKEN / GH_TOKEN, then the token saved by `login`.
     #[serde(default)]
     pub github_token: Option<String>,
@@ -106,7 +109,7 @@ fn yes() -> bool {
 const OPTION_KEYS: &[&str] =
     &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "save_readme"];
 const TOP_KEYS: &[&str] = &[
-    "archive_root", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo",
+    "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo",
 ];
 const REPO_KEYS: &[&str] = &["repo", "folder"];
 /// Settings from older versions that are now ignored (warned about, not rejected).
@@ -180,6 +183,21 @@ impl Config {
     fn validate(&self) -> Result<()> {
         if self.archive_root.as_os_str().is_empty() {
             bail!("archive_root must not be empty");
+        }
+        let norm = |p: &Path| p.to_string_lossy().trim_end_matches(['/', '\\']).to_lowercase();
+        let root = norm(&self.archive_root);
+        let mut seen = std::collections::HashSet::new();
+        for m in &self.mirrors {
+            let mn = norm(m);
+            if mn.is_empty() {
+                bail!("mirrors must not contain an empty path");
+            }
+            if mn == root {
+                bail!("mirror {} is the same folder as archive_root", m.display());
+            }
+            if !seen.insert(mn) {
+                bail!("mirror {} is listed twice", m.display());
+            }
         }
         if self.interval_minutes == 0 {
             bail!("interval_minutes must be at least 1");
@@ -282,6 +300,14 @@ mod tests {
         assert_eq!(s.ignore, ["big/*"]);
         assert_eq!(cfg.project_folder(&cfg.repos[0]), "b");
         assert_eq!(cfg.project_folder(&cfg.repos[1]), "Dee");
+    }
+
+    #[test]
+    fn mirrors() {
+        let cfg = Config::parse("archive_root = 'D:\\Archive'\nmirrors = ['\\\\nas\\software']").unwrap();
+        assert_eq!(cfg.mirrors, [PathBuf::from(r"\\nas\software")]);
+        assert!(Config::parse("archive_root = '/a'\nmirrors = ['/a/']").is_err());
+        assert!(Config::parse("archive_root = '/a'\nmirrors = ['/b', '/B']").is_err());
     }
 
     #[test]
