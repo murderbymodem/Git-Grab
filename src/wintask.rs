@@ -169,6 +169,20 @@ pub fn run_now(name: &str) -> Result<()> {
     schtasks(&["/Run", "/TN", name]).map(|_| ())
 }
 
+/// True when the program got a console window of its own, which is what
+/// happens when it's double-clicked in Explorer. When it's started from
+/// PowerShell or cmd, the shell shares the console, so more than one process
+/// is attached.
+pub fn launched_from_explorer() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        let mut pids = [0u32; 4];
+        windows_sys::Win32::System::Console::GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) == 1
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 /// Detaches from the console window. Used by scheduled runs, so the window
 /// Task Scheduler opens for interactive tasks closes right away.
 pub fn hide_console() {

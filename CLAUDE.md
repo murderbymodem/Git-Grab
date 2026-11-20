@@ -32,6 +32,7 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - `src/github.rs`: REST client with ETag cache, starred list, downloads
 - `src/classify.rs`: OS folder detection from file names
 - `src/auth.rs`: login (token paste or OAuth device flow), token storage
+- `src/setup.rs`: interactive setup wizard and menu (runs when the .exe is double-clicked)
 - `src/wintask.rs`: Windows Task Scheduler XML and `schtasks.exe` calls
 - `config.example.toml`: documented example config, also used by `init` and by tests
 

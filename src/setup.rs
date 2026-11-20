@@ -1,0 +1,362 @@
+//! Guided setup, shown when the program is double-clicked (or run as `setup`).
+
+use crate::config::{Config, APP_DIR};
+use crate::{auth, wintask};
+use anyhow::{Context, Result};
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+
+pub fn run(config_path: &Path) -> Result<()> {
+    println!("GitHub Release Archiver {}", env!("CARGO_PKG_VERSION"));
+    println!("Saves GitHub release files to a folder or network share, sorted as");
+    println!("<Project>\\<OS>\\<version>\\<file>.\n");
+
+    if config_path.exists() {
+        return menu(config_path);
+    }
+    first_time(config_path)
+}
+
+/// Shown when a config already exists.
+fn menu(config_path: &Path) -> Result<()> {
+    loop {
+        println!("Config: {}\n", config_path.display());
+        if let Err(e) = crate::status(config_path) {
+            println!("(could not read status: {e:#})");
+        }
+        println!("\nWhat would you like to do?");
+        println!("  1  Check for new releases now");
+        println!("  2  Show what would be downloaded (no changes)");
+        println!("  3  Edit the config file");
+        println!("  4  Log in to GitHub again");
+        println!("  5  Set up the hourly background check again");
+        println!("  6  Start setup over (replaces the config)");
+        println!("  Q  Quit");
+        let choice = ask("Choice", "Q").to_ascii_uppercase();
+        println!();
+        let result = match choice.as_str() {
+            "1" | "2" => Config::load(config_path).and_then(|c| crate::run_once(&c, choice == "2").map(|_| ())),
+            "3" => open_editor(config_path),
+            "4" => crate::login(config_path, None, false).map(|_| ()),
+            "5" => schedule(config_path, None),
+            "6" => return first_time(config_path),
+            "Q" | "" => return Ok(()),
+            _ => {
+                println!("Please type a number from the list.");
+                Ok(())
+            }
+        };
+        if let Err(e) = result {
+            println!("Error: {e:#}");
+        }
+        println!();
+    }
+}
+
+fn first_time(config_path: &Path) -> Result<()> {
+    // 1. Where to save
+    println!("Step 1 of 5: Where should releases be saved?");
+    println!("  A network share like \\\\nas\\software, or a local folder like D:\\Software.");
+    let archive_root = loop {
+        let answer = ask("Folder", "");
+        if answer.is_empty() {
+            continue;
+        }
+        let p = PathBuf::from(&answer);
+        if p.is_dir() {
+            break answer;
+        }
+        println!("  That folder doesn't exist or can't be reached.");
+        if yes_no("  Create it?", true) {
+            match std::fs::create_dir_all(&p) {
+                Ok(()) => break answer,
+                Err(e) => println!("  Couldn't create it: {e}"),
+            }
+        } else if yes_no("  Use it anyway (e.g. the share isn't connected right now)?", false) {
+            break answer;
+        }
+    };
+
+    // 2. Login
+    println!("\nStep 2 of 5: Log in to GitHub");
+    println!("  Needed to archive your starred repos, and raises GitHub's limit from 60 to");
+    println!("  5,000 checks per hour.");
+    let mut login = auth::resolve(None).and_then(|(token, _)| {
+        let client = crate::github::Client::new("https://api.github.com", Some(token), None).ok()?;
+        client.current_user().ok().map(|u| u.login)
+    });
+    let prompt = match &login {
+        Some(user) => format!("Already logged in as {user}. Log in again as someone else?"),
+        None => "Log in now?".to_string(),
+    };
+    if yes_no(&prompt, login.is_none()) {
+        loop {
+            match crate::login(config_path, None, false) {
+                Ok(user) => {
+                    login = Some(user);
+                    break;
+                }
+                Err(e) => {
+                    println!("  Login failed: {e:#}");
+                    if !yes_no("  Try again?", true) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. What to archive
+    println!("\nStep 3 of 5: Which repos?");
+    let starred_user = match &login {
+        Some(user) => yes_no(&format!("Archive every repo starred by {user}?"), true).then_some(None),
+        None => {
+            let u = ask("GitHub username whose starred repos to archive (blank to skip)", "");
+            (!u.is_empty()).then_some(Some(u))
+        }
+    };
+    println!("Add specific repos as owner/name (e.g. BurntSushi/ripgrep), one per line.");
+    println!("Press Enter on an empty line when done.");
+    let mut repos = Vec::new();
+    loop {
+        let r = ask("Repo", "");
+        if r.is_empty() {
+            break;
+        }
+        let r = r.trim_start_matches("https://github.com/").trim_end_matches('/').to_string();
+        if r.split('/').count() == 2 && !r.starts_with('/') && !r.ends_with('/') {
+            repos.push(r);
+        } else {
+            println!("  Use the form owner/name.");
+        }
+    }
+
+    // 4. Options
+    println!("\nStep 4 of 5: Options");
+    println!("  Systems to keep: Windows, Linux, macOS, Android, iOS, FreeBSD, Other");
+    let only_os: Vec<String> = ask("Which ones? (comma-separated, Enter for all)", "")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let releases: usize = loop {
+        match ask("How many of the newest releases to keep per project?", "1").parse() {
+            Ok(n) if n >= 1 => break n,
+            _ => println!("  Enter a number, 1 or more."),
+        }
+    };
+    let prune = yes_no(&format!("Delete older releases once there are more than {releases}?"), false);
+
+    let text = build_config(&Answers {
+        archive_root: &archive_root,
+        starred_user: starred_user.as_ref().map(|u| u.as_deref()),
+        repos: &repos,
+        only_os: &only_os,
+        releases,
+        prune,
+    });
+    Config::parse(&text).context("the generated config is invalid (please report this)")?;
+    if let Some(dir) = config_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(config_path, text)?;
+    println!("\nSaved the config to {}", config_path.display());
+    println!("(Every other option is explained in config.example.toml.)");
+
+    // 5. Background checks
+    println!("\nStep 5 of 5: Background checks");
+    let mut exe = None;
+    if cfg!(windows) {
+        if yes_no("Check for new releases every hour in the background?", true) {
+            exe = install_program();
+            if let Err(e) = schedule(config_path, exe.clone()) {
+                println!("Couldn't create the scheduled task: {e:#}");
+            }
+        }
+    } else {
+        println!("  On Linux, use a systemd timer or cron to run `run` hourly (see the README).");
+    }
+
+    if yes_no("\nShow what would be downloaded now?", true) {
+        let cfg = Config::load(config_path)?;
+        crate::run_once(&cfg, true)?;
+        if yes_no("Download it now? (Otherwise the background check will.)", true) {
+            crate::run_once(&cfg, false)?;
+        }
+    }
+    println!("\nAll set. Double-click the program again any time for the menu.");
+    if let Some(e) = exe {
+        println!("The program is installed at {}", e.display());
+    }
+    Ok(())
+}
+
+fn schedule(config_path: &Path, exe: Option<PathBuf>) -> Result<()> {
+    wintask::ensure_windows()?;
+    println!("By default the check runs while you're logged on, and a window flashes briefly.");
+    println!("Running it when you're logged off too hides the window, but Windows needs your");
+    println!("password to store with the task.");
+    let logged_off = yes_no("Also run while you're logged off?", false);
+    crate::install_task(config_path, 60, logged_off, wintask::DEFAULT_NAME, None, exe)
+}
+
+/// Copies the program to %LOCALAPPDATA%\Programs so the scheduled task keeps
+/// working if the downloaded copy is deleted. Returns the path to use.
+fn install_program() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let dir = dirs::data_local_dir()?.join("Programs").join(APP_DIR);
+    let dest = dir.join(current.file_name()?);
+    let same = std::fs::canonicalize(&current).ok() == std::fs::canonicalize(&dest).ok();
+    if same {
+        return Some(dest);
+    }
+    println!("The background check needs the program in a permanent place.");
+    if !yes_no(&format!("Copy it to {}?", dir.display()), true) {
+        return None; // use the current location
+    }
+    match std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&current, &dest)) {
+        Ok(_) => Some(dest),
+        Err(e) => {
+            println!("  Couldn't copy it ({e}); using the current location instead.");
+            None
+        }
+    }
+}
+
+fn open_editor(path: &Path) -> Result<()> {
+    let editor = if cfg!(windows) { "notepad".to_string() } else { std::env::var("EDITOR").unwrap_or_else(|_| "nano".into()) };
+    std::process::Command::new(&editor).arg(path).status().with_context(|| format!("cannot start {editor}"))?;
+    if let Err(e) = Config::load(path) {
+        println!("Warning: the config now has a problem: {e:#}");
+    }
+    Ok(())
+}
+
+pub struct Answers<'a> {
+    pub archive_root: &'a str,
+    /// None = starred off; Some(None) = the logged-in account; Some(Some(u)) = user u.
+    pub starred_user: Option<Option<&'a str>>,
+    pub repos: &'a [String],
+    pub only_os: &'a [String],
+    pub releases: usize,
+    pub prune: bool,
+}
+
+/// TOML string with correct quoting/escaping for any input.
+fn q(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
+pub fn build_config(a: &Answers) -> String {
+    let mut t = String::new();
+    t.push_str("# Created by github-release-archiver setup. All options: see config.example.toml\n\n");
+    t.push_str(&format!("archive_root = {}\n\n", q(a.archive_root)));
+    t.push_str("# How many of the newest releases to archive per project\n");
+    t.push_str(&format!("releases = {}\n", a.releases));
+    if a.prune {
+        t.push_str("# Delete older releases (only ones this program downloaded)\n");
+        t.push_str(&format!("keep_versions = {}\n", a.releases));
+    } else {
+        t.push_str(&format!("# keep_versions = {}   # uncomment to delete older releases\n", a.releases));
+    }
+    t.push_str("include_prereleases = false\n");
+    t.push_str("exclude = [\"*.sbom.json\", \"*.spdx.json\", \"*.intoto.jsonl\"]\n");
+    if a.only_os.is_empty() {
+        t.push_str("# only_os = [\"Windows\", \"Linux\"]   # uncomment to keep only some systems\n");
+    } else {
+        let list: Vec<String> = a.only_os.iter().map(|s| q(s)).collect();
+        t.push_str(&format!("only_os = [{}]\n", list.join(", ")));
+    }
+    t.push_str("\n[starred]\n");
+    match a.starred_user {
+        None => t.push_str("enabled = false\n"),
+        Some(None) => t.push_str("enabled = true   # repos starred by the logged-in account\n"),
+        Some(Some(u)) => t.push_str(&format!("enabled = true\nuser = {}\n", q(u))),
+    }
+    t.push_str("# ignore = [\"someorg/*\"]   # starred repos to skip\n");
+    for r in a.repos {
+        t.push_str(&format!("\n[[repo]]\nrepo = {}\n", q(r)));
+    }
+    t
+}
+
+// ---- Console prompts ----
+
+fn read_line() -> Option<String> {
+    let mut s = String::new();
+    match io::stdin().lock().read_line(&mut s) {
+        Ok(0) | Err(_) => None, // end of input: fall back to defaults
+        Ok(_) => Some(s.trim().to_string()),
+    }
+}
+
+pub fn ask(question: &str, default: &str) -> String {
+    if default.is_empty() {
+        print!("{question}: ");
+    } else {
+        print!("{question} [{default}]: ");
+    }
+    let _ = io::stdout().flush();
+    match read_line() {
+        Some(s) if !s.is_empty() => s,
+        _ => default.to_string(),
+    }
+}
+
+pub fn yes_no(question: &str, default: bool) -> bool {
+    loop {
+        print!("{question} [{}]: ", if default { "Y/n" } else { "y/N" });
+        let _ = io::stdout().flush();
+        match read_line().map(|s| s.to_ascii_lowercase()) {
+            None => return default,
+            Some(s) if s.is_empty() => return default,
+            Some(s) if s == "y" || s == "yes" => return true,
+            Some(s) if s == "n" || s == "no" => return false,
+            _ => println!("  Please answer y or n."),
+        }
+    }
+}
+
+/// Keeps a double-clicked window open until Enter is pressed.
+pub fn pause() {
+    print!("\nPress Enter to close this window...");
+    let _ = io::stdout().flush();
+    let _ = read_line();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_config_parses() {
+        let repos = vec!["BurntSushi/ripgrep".to_string()];
+        let os = vec!["Windows".to_string(), "Linux".to_string()];
+        let text = build_config(&Answers {
+            archive_root: r"\\nas\eric's share",
+            starred_user: Some(None),
+            repos: &repos,
+            only_os: &os,
+            releases: 2,
+            prune: true,
+        });
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(cfg.archive_root, PathBuf::from(r"\\nas\eric's share"));
+        assert_eq!(cfg.defaults.keep_versions, Some(2));
+        assert_eq!(cfg.defaults.only_os, os);
+        assert!(cfg.starred_enabled().unwrap().user.is_none());
+        assert_eq!(cfg.repos[0].repo, "BurntSushi/ripgrep");
+
+        let text = build_config(&Answers {
+            archive_root: "/mnt/x",
+            starred_user: Some(Some("someone")),
+            repos: &[],
+            only_os: &[],
+            releases: 1,
+            prune: false,
+        });
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(cfg.starred_enabled().unwrap().user.as_deref(), Some("someone"));
+        assert!(cfg.defaults.only_os.is_empty() && cfg.defaults.keep_versions.is_none());
+    }
+}

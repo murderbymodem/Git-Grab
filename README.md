@@ -40,26 +40,27 @@ It's a single program for Windows and Linux.
 
 ## Quick start (Windows)
 
-```powershell
-# 1. Create a config file in %APPDATA%\github-release-archiver\config.toml
-github-release-archiver init --archive-root '\\nas\software'
+1. Download `github-release-archiver-<version>-windows-x64.zip` from
+   [Releases](https://github.com/murderbymodem/github-release-archiver/releases) and extract it.
+2. **Double-click `github-release-archiver.exe`.** A guided setup asks for:
+   - where to save releases (for example `\\nas\software`)
+   - your GitHub login
+   - whether to archive your starred repos, plus any other repos to include
+   - which systems to keep, and how many versions
+   - whether to check hourly in the background
 
-# 2. Log in to GitHub (needed for your starred repos)
-github-release-archiver login
+   It then copies the program to `%LOCALAPPDATA%\Programs\github-release-archiver\`,
+   creates the scheduled task, and offers to run a first check.
+3. Double-click it again any time for a menu: check now, edit the config, log in
+   again, and so on.
 
-# 3. Edit the config: set [starred] enabled = true and/or add [[repo]] entries
-notepad $env:APPDATA\github-release-archiver\config.toml
+Windows may show a SmartScreen warning the first time, because the program isn't
+code-signed. Click **More info → Run anyway**.
 
-# 4. Check what would be downloaded
-github-release-archiver run --dry-run
-
-# 5. Check hourly from now on
-github-release-archiver task install
-```
-
-Linux is the same, except the config goes in
-`~/.config/github-release-archiver/config.toml` and step 5 uses a systemd
-timer (see below).
+You can do the same from a terminal: run `github-release-archiver setup`, or the
+individual steps `init`, `login`, `run --dry-run` and `task install`. On Linux,
+the config goes in `~/.config/github-release-archiver/config.toml` and hourly
+checks use a systemd timer (see below).
 
 ## Logging in
 
@@ -179,6 +180,7 @@ The first command saves the token for the `archiver` user. Logs:
 
 | Command | What it does |
 |---|---|
+| `setup` | Guided setup, or a menu if already set up (also what double-clicking runs) |
 | `init [--archive-root PATH]` | Create a starter config |
 | `login` / `logout` / `status` | Manage the GitHub login and show the current setup |
 | `run [--dry-run]` | Check everything once |

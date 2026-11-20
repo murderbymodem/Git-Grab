@@ -4,12 +4,13 @@ mod classify;
 mod config;
 mod github;
 mod logging;
+mod setup;
 mod targets;
 mod util;
 mod wintask;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use config::{Config, APP_DIR};
 use log::{error, info, warn};
 use std::io::BufRead;
@@ -28,11 +29,13 @@ struct Cli {
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Guided setup: archive folder, GitHub login, repos, scheduled task (also runs on double-click)
+    Setup,
     /// Create a starter config file
     Init {
         /// Where the archive should go, e.g. \\nas\software or /mnt/software
@@ -107,28 +110,45 @@ enum TaskCmd {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    if let Command::Run { scheduled: true, .. } = cli.command {
-        wintask::hide_console();
+    let mut cli = Cli::parse();
+    // Opened by double-clicking in Explorer: run the guided setup, and keep the
+    // window open at the end so the output can be read.
+    let double_clicked = cli.command.is_none() && wintask::launched_from_explorer();
+    match &cli.command {
+        None if double_clicked => cli.command = Some(Command::Setup),
+        None => {
+            let _ = Cli::command().print_help();
+            return ExitCode::SUCCESS;
+        }
+        Some(Command::Run { scheduled: true, .. }) => wintask::hide_console(),
+        Some(_) => {}
     }
     if let Err(e) = logging::init(cli.log_file.as_deref()) {
         eprintln!("{e:#}");
         return ExitCode::from(2);
     }
-    match real_main(cli) {
+    let code = match real_main(cli) {
         Ok(code) => code,
         Err(e) => {
             error!("{e:#}");
             ExitCode::from(2)
         }
+    };
+    if double_clicked {
+        setup::pause();
     }
+    code
 }
 
 fn real_main(cli: Cli) -> Result<ExitCode> {
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
-    match cli.command {
+    let Some(command) = cli.command else { return Ok(ExitCode::SUCCESS) };
+    match command {
+        Command::Setup => setup::run(&config_path)?,
         Command::Init { archive_root, force } => init(&config_path, archive_root.as_deref(), force)?,
-        Command::Login { client_id, with_token } => login(&config_path, client_id, with_token)?,
+        Command::Login { client_id, with_token } => {
+            login(&config_path, client_id, with_token)?;
+        }
         Command::Logout => {
             if auth::delete()? {
                 println!("Saved login removed. (The token itself stays valid until you revoke it on GitHub.)");
@@ -184,7 +204,8 @@ fn init(path: &Path, archive_root: Option<&str>, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn login(config_path: &Path, client_id: Option<String>, with_token: bool) -> Result<()> {
+/// Returns the GitHub username that logged in.
+fn login(config_path: &Path, client_id: Option<String>, with_token: bool) -> Result<String> {
     let cfg = Config::load(config_path).ok();
     let api = cfg.as_ref().map(|c| c.api_url.clone()).unwrap_or_else(|| "https://api.github.com".into());
     let client_id = client_id
@@ -209,7 +230,7 @@ fn login(config_path: &Path, client_id: Option<String>, with_token: bool) -> Res
         .context("the token didn't work")?;
     let place = auth::save(&token)?;
     println!("Logged in as {}. Token saved in {place}.", user.login);
-    Ok(())
+    Ok(user.login)
 }
 
 fn status(config_path: &Path) -> Result<()> {
@@ -322,41 +343,7 @@ fn task(cmd: TaskCmd, config_path: &Path, log_file: Option<&Path>) -> Result<()>
     wintask::ensure_windows()?;
     match cmd {
         TaskCmd::Install { every, run_when_logged_off, name } => {
-            let cfg = Config::load(config_path)?; // refuse to schedule a broken config
-            let config_abs = wintask::absolute(config_path)?;
-            let workdir = config_abs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-            let log = match log_file {
-                Some(l) => l.to_path_buf(),
-                None => workdir.join("github-release-archiver.log"),
-            };
-            let exe = wintask::absolute(&std::env::current_exe()?)?;
-            let user = wintask::current_user()?;
-            let args = format!(
-                r#"--config "{}" --log-file "{}" run --scheduled"#,
-                config_abs.display(),
-                wintask::clean_path(&log)
-            );
-            if auth::resolve(cfg.github_token.as_deref()).is_none() {
-                warn!("not logged in: scheduled runs will be limited to 60 API requests/hour. Run `login` first");
-            }
-            let root = cfg.archive_root.display().to_string();
-            if run_when_logged_off && !root.starts_with(r"\\") && !root.to_ascii_uppercase().starts_with("C:") {
-                warn!("archive_root is {root}: mapped drive letters don't exist when you're logged off. Use a UNC path like \\\\server\\share");
-            }
-            let (logon, password) = if run_when_logged_off {
-                let pw = rpassword::prompt_password(format!("Windows password for {user}: "))?;
-                (wintask::Logon::Password, Some(pw))
-            } else {
-                (wintask::Logon::Interactive, None)
-            };
-            let spec = wintask::TaskSpec { name: name.clone(), exe, args, workdir, interval_minutes: every, user, logon };
-            wintask::install(&spec, password.as_deref())?;
-            println!("Scheduled task \"{name}\" created: checks every {every} minute(s).");
-            println!("Log file: {}", log.display());
-            println!("Test it now with: github-release-archiver task run");
-            if !run_when_logged_off {
-                println!("It runs only while you're logged on. Use --run-when-logged-off to run at all times.");
-            }
+            install_task(config_path, every, run_when_logged_off, &name, log_file, None)?;
         }
         TaskCmd::Remove { name } => {
             wintask::uninstall(&name)?;
@@ -367,6 +354,58 @@ fn task(cmd: TaskCmd, config_path: &Path, log_file: Option<&Path>) -> Result<()>
             wintask::run_now(&name)?;
             println!("Started \"{name}\". Watch the log file for progress.");
         }
+    }
+    Ok(())
+}
+
+/// Creates the scheduled task. `exe` overrides the program path (setup copies
+/// the program to a permanent folder first).
+fn install_task(
+    config_path: &Path,
+    every: u32,
+    run_when_logged_off: bool,
+    name: &str,
+    log_file: Option<&Path>,
+    exe: Option<PathBuf>,
+) -> Result<()> {
+    wintask::ensure_windows()?;
+    let cfg = Config::load(config_path)?; // refuse to schedule a broken config
+    let config_abs = wintask::absolute(config_path)?;
+    let workdir = config_abs.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let log = match log_file {
+        Some(l) => l.to_path_buf(),
+        None => workdir.join("github-release-archiver.log"),
+    };
+    let exe = match exe {
+        Some(e) => e,
+        None => wintask::absolute(&std::env::current_exe()?)?,
+    };
+    let user = wintask::current_user()?;
+    let args = format!(
+        r#"--config "{}" --log-file "{}" run --scheduled"#,
+        config_abs.display(),
+        wintask::clean_path(&log)
+    );
+    if auth::resolve(cfg.github_token.as_deref()).is_none() {
+        warn!("not logged in: scheduled runs will be limited to 60 API requests/hour. Run `login` first");
+    }
+    let root = cfg.archive_root.display().to_string();
+    if run_when_logged_off && !root.starts_with(r"\\") && !root.to_ascii_uppercase().starts_with("C:") {
+        warn!("archive_root is {root}: mapped drive letters don't exist when you're logged off. Use a UNC path like \\\\server\\share");
+    }
+    let (logon, password) = if run_when_logged_off {
+        let pw = rpassword::prompt_password(format!("Windows password for {user}: "))?;
+        (wintask::Logon::Password, Some(pw))
+    } else {
+        (wintask::Logon::Interactive, None)
+    };
+    let spec = wintask::TaskSpec { name: name.to_string(), exe, args, workdir, interval_minutes: every, user, logon };
+    wintask::install(&spec, password.as_deref())?;
+    println!("Scheduled task \"{name}\" created: checks every {every} minute(s).");
+    println!("Log file: {}", log.display());
+    println!("Test it now with: github-release-archiver task run");
+    if !run_when_logged_off {
+        println!("It runs only while you're logged on. Use --run-when-logged-off to run at all times.");
     }
     Ok(())
 }
