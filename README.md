@@ -1,4 +1,4 @@
-# github-release-archiver
+# GitHub-Grab
 
 Checks GitHub repositories, including everything you've starred, for new
 releases and archives every file from each release on a network share, one
@@ -55,12 +55,12 @@ It's a single program for Windows and Linux.
 
 ## Quick start (Windows)
 
-1. Download `github-release-archiver-<version>-windows-x64.zip` from
-   [Releases](https://github.com/murderbymodem/github-release-archiver/releases).
+1. Download `github-grab-<version>-windows-x64.zip` from
+   [Releases](https://github.com/murderbymodem/GitHub-Grab/releases).
 2. **Extract it to a permanent folder**, not Downloads. For example
-   `C:\Tools\github-release-archiver\`. The program is portable: it keeps its
+   `C:\Tools\GitHub-Grab\`. The program is portable: it keeps its
    settings in that folder, and the hourly check runs it from there.
-3. **Double-click `github-release-archiver.exe`.** A guided setup asks for:
+3. **Double-click `github-grab.exe`.** A guided setup asks for:
    - where to save releases (for example `D:\Software`), plus an optional mirror
      such as `\\nas\software`
    - your GitHub login
@@ -75,7 +75,7 @@ It's a single program for Windows and Linux.
 Windows may show a SmartScreen warning the first time, because the program isn't
 code-signed. Click **More info → Run anyway**.
 
-You can do the same from a terminal: run `github-release-archiver setup`, or the
+You can do the same from a terminal: run `github-grab setup`, or the
 individual steps `init`, `login`, `run --dry-run` and `task install`. On Linux,
 hourly checks use a systemd timer (see below).
 
@@ -86,7 +86,7 @@ Everything the program needs lives in the folder that holds it:
 | File | What it is |
 |---|---|
 | `config.toml` | Your settings |
-| `github-release-archiver.log` | Log of the scheduled checks (`.log.1` is the previous one) |
+| `github-grab.log` | Log of the scheduled checks (`.log.1` is the previous one) |
 | `cache\` | Cached GitHub responses, so unchanged data doesn't use up the rate limit |
 | `token` | Linux only: the saved GitHub login, readable only by you |
 
@@ -99,10 +99,11 @@ update it.
 
 If the program's folder can't be written to, such as `C:\Program Files` or
 `/usr/local/bin`, these files go in your user profile instead
-(`%APPDATA%\github-release-archiver` or `~/.config/github-release-archiver`).
+(`%APPDATA%\github-grab` or `~/.config/github-grab`).
 `-c path\to\config.toml` uses a config from anywhere.
 
-**Upgrading from 0.6 or earlier**, which kept settings in `%APPDATA%`: start the
+**Upgrading from 0.6 or earlier**, which kept settings in
+`%APPDATA%\github-release-archiver`: start the
 new version from its permanent folder. Setup finds the old settings and offers to
 move them next to the program. It then updates the hourly check to run the new
 copy, and removes what the old version left behind: the old config and log,
@@ -132,7 +133,7 @@ drive letters.
 
 ## Logging in
 
-`github-release-archiver login` saves a GitHub token: in **Windows Credential
+`github-grab login` saves a GitHub token: in **Windows Credential
 Manager** on Windows, and on Linux in a `token` file next to the program that
 only you can read. Logging in lets the tool
 read your starred repos and raises GitHub's limit from 60 to 5,000 requests
@@ -150,7 +151,7 @@ There are two ways to log in:
   2. Enter any name and homepage. The callback URL is not used: enter the homepage again.
   3. Register it, then tick **Enable Device Flow**.
   4. Put the app's **Client ID** in the config (`oauth_client_id = "Ov23li..."`),
-     or build it in with `GRA_OAUTH_CLIENT_ID=... cargo build --release`.
+     or build it in with `GITHUB_GRAB_OAUTH_CLIENT_ID=... cargo build --release`.
 
   A client ID is not a secret, and no client secret is used.
 
@@ -182,16 +183,16 @@ belongs to, so the folder names stay the same from run to run.
 ## Windows: scheduled task
 
 ```powershell
-github-release-archiver task install                        # hourly, while you're logged on
-github-release-archiver task install --every 30             # every 30 minutes
-github-release-archiver task install --run-when-logged-off  # all the time (asks for your password)
-github-release-archiver task run      # start it now to test
-github-release-archiver task status   # last run time and result
-github-release-archiver task remove
+github-grab task install                        # hourly, while you're logged on
+github-grab task install --every 30             # every 30 minutes
+github-grab task install --run-when-logged-off  # all the time (asks for your password)
+github-grab task run      # start it now to test
+github-grab task status   # last run time and result
+github-grab task remove
 ```
 
 - The task runs `run` with the config file you used when installing it, and
-  writes its log to `github-release-archiver.log` next to that config. When the
+  writes its log to `github-grab.log` next to that config. When the
   log passes 5 MB, the old one is kept as `.log.1`.
 - **By default** it runs only while you're logged on, and no password is
   stored. A console window flashes briefly each time.
@@ -205,7 +206,7 @@ github-release-archiver task remove
 
 ## Linux: systemd timer
 
-`/etc/systemd/system/github-release-archiver.service`
+`/etc/systemd/system/github-grab.service`
 
 ```ini
 [Unit]
@@ -217,14 +218,14 @@ RequiresMountsFor=/mnt/software
 [Service]
 Type=oneshot
 User=archiver
-ExecStart=/usr/local/bin/github-release-archiver -c /etc/github-release-archiver/config.toml run
+ExecStart=/usr/local/bin/github-grab -c /etc/github-grab/config.toml run
 ```
 
-`/etc/systemd/system/github-release-archiver.timer`
+`/etc/systemd/system/github-grab.timer`
 
 ```ini
 [Unit]
-Description=Run github-release-archiver hourly
+Description=Run github-grab hourly
 
 [Timer]
 OnBootSec=5min
@@ -236,12 +237,12 @@ WantedBy=timers.target
 ```
 
 ```bash
-sudo -u archiver github-release-archiver login
-sudo systemctl enable --now github-release-archiver.timer
+sudo -u archiver github-grab login
+sudo systemctl enable --now github-grab.timer
 ```
 
 The first command saves the token for the `archiver` user. Logs:
-`journalctl -u github-release-archiver`.
+`journalctl -u github-grab`.
 
 ## Commands
 
@@ -254,12 +255,28 @@ The first command saves the token for the `archiver` user. Logs:
 | `watch` | Keep running, checking every `interval_minutes` and re-reading the config each time |
 | `task install/run/status/remove` | Windows scheduled task |
 
-Global options: `-c/--config PATH` (or the `GITHUB_RELEASE_ARCHIVER_CONFIG`
+Global options: `-c/--config PATH` (or the `GITHUB_GRAB_CONFIG`
 environment variable) and `--log-file PATH`. Exit codes: `0` success, `1` some
 repos or files failed (the rest continued), `2` the run couldn't start.
 Set `RUST_LOG=debug` for detailed logs.
 
 Every option is explained in [`config.example.toml`](config.example.toml).
+
+## Renamed from github-release-archiver
+
+Up to version 0.7, GitHub-Grab was called *github-release-archiver*. The new
+version picks up everything the old one left, so there's nothing to redo:
+
+- **Archive:** each project's hidden state file (`.github-release-archiver.json`)
+  is renamed to `.github-grab.json` on the next run, in the main archive and in
+  mirrors.
+- **Windows login:** a token saved in Credential Manager under the old name is
+  moved to the new one.
+- **Scheduled task:** double-click `github-grab.exe` and it offers to replace the
+  old "GitHub Release Archiver" task with a "GitHub-Grab" task that runs the new
+  program. It then renames the old log and removes `github-release-archiver.exe`
+  if it's in the same folder.
+- `GITHUB_RELEASE_ARCHIVER_CONFIG` still works if `GITHUB_GRAB_CONFIG` isn't set.
 
 ## Upgrading from 0.4 or earlier
 
@@ -276,10 +293,10 @@ cargo build --release
 ```
 
 Ready-made programs are on the
-[Releases](https://github.com/murderbymodem/github-release-archiver/releases) page:
+[Releases](https://github.com/murderbymodem/GitHub-Grab/releases) page:
 
-- `github-release-archiver-<version>-windows-x64.zip` for 64-bit Windows 10/11
-- `github-release-archiver-<version>-linux-x64.tar.gz` for 64-bit Linux. It's a
+- `github-grab-<version>-windows-x64.zip` for 64-bit Windows 10/11
+- `github-grab-<version>-linux-x64.tar.gz` for 64-bit Linux. It's a
   single self-contained file that runs on any distro with nothing to install.
 
 Publishing a release on GitHub (with a new `v*` tag) builds and attaches both

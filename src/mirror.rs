@@ -6,7 +6,7 @@
 //! own copy of the state file records them and the main archive no longer does
 //! (i.e. retention removed that release).
 
-use crate::archive::{recorded, Recorded, STATE_FILE};
+use crate::archive::{recorded, Recorded, LEGACY_STATE_FILE, STATE_FILE};
 use anyhow::{Context, Result};
 use log::{info, warn};
 use std::fs;
@@ -36,6 +36,9 @@ pub fn sync_project(src: &Path, dst: &Path, dry_run: bool, stats: &mut Stats) ->
     // The state file goes last: if the copy is interrupted, the mirror's state
     // never lists folders that weren't copied.
     copy_file_if_changed(&src.join(STATE_FILE), &dst.join(STATE_FILE), dry_run, stats)?;
+    if !dry_run && dst.join(STATE_FILE).is_file() {
+        let _ = fs::remove_file(dst.join(LEGACY_STATE_FILE)); // name from before the rename
+    }
     Ok(())
 }
 
@@ -76,6 +79,7 @@ fn is_safe(p: &str) -> bool {
     (1..=2).contains(&path.components().count())
         && path.components().all(|c| matches!(c, Component::Normal(_)))
         && p != STATE_FILE
+        && p != LEGACY_STATE_FILE
 }
 
 fn copy_tree(src: &Path, dst: &Path, dry_run: bool, stats: &mut Stats) -> Result<()> {
@@ -83,7 +87,7 @@ fn copy_tree(src: &Path, dst: &Path, dry_run: bool, stats: &mut Stats) -> Result
         let entry = entry?;
         let name = entry.file_name();
         let name_s = name.to_string_lossy();
-        if name_s == STATE_FILE || name_s.ends_with(".part") || name_s.ends_with(".tmp") {
+        if name_s == STATE_FILE || name_s == LEGACY_STATE_FILE || name_s.ends_with(".part") || name_s.ends_with(".tmp") {
             continue; // state file is copied last; skip unfinished downloads
         }
         let from = entry.path();

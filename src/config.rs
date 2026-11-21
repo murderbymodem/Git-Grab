@@ -4,7 +4,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const APP_DIR: &str = "github-release-archiver";
+pub const APP_DIR: &str = "github-grab";
+/// The program's name before it was renamed GitHub-Grab (versions up to 0.7).
+pub const LEGACY_APP_DIR: &str = "github-release-archiver";
 
 // `deny_unknown_fields` doesn't work together with `flatten`, so unknown keys
 // are caught by `check_unknown_keys` instead.

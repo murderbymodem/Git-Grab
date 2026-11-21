@@ -1,10 +1,10 @@
 [package]
-name = "github-release-archiver"
-version = "0.7.0"
+name = "github-grab"
+version = "0.8.0"
 edition = "2021"
-description = "Watches GitHub repositories (or your starred repos) for new releases and archives their files into per-project, per-OS folders"
+description = "GitHub-Grab: watches GitHub repositories (or your starred repos) for new releases and archives every file into per-project, per-version folders"
 license = "GPL-3.0-only"
-repository = "https://github.com/murderbymodem/github-release-archiver"
+repository = "https://github.com/murderbymodem/GitHub-Grab"
 
 [dependencies]
 anyhow = "1"

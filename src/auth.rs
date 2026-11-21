@@ -9,7 +9,10 @@ use log::warn;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-const SERVICE: &str = "github-release-archiver";
+#[cfg(windows)]
+const SERVICE: &str = "github-grab";
+/// Name used before the rename to GitHub-Grab; a login saved under it is moved.
+const LEGACY_SERVICE: &str = crate::config::LEGACY_APP_DIR;
 
 /// Where a token came from, for `status`.
 pub enum Source {
@@ -42,14 +45,18 @@ pub fn resolve(config_token: Option<&str>) -> Option<(String, Source)> {
 
 #[cfg(windows)]
 mod store {
-    /// The Windows token lives in Credential Manager, which doesn't move.
-    pub fn migrate_legacy() {}
-
-    use super::SERVICE;
+    use super::{LEGACY_SERVICE, SERVICE};
     use anyhow::Result;
+
+    /// The Windows token lives in Credential Manager; `load` moves one saved
+    /// under the old name.
+    pub fn migrate_legacy() {}
 
     fn entry() -> Result<keyring::Entry> {
         Ok(keyring::Entry::new(SERVICE, "github-token")?)
+    }
+    fn legacy_entry() -> Result<keyring::Entry> {
+        Ok(keyring::Entry::new(LEGACY_SERVICE, "github-token")?)
     }
     pub fn save(token: &str) -> Result<String> {
         entry()?.set_password(token)?;
@@ -58,14 +65,25 @@ mod store {
     pub fn load() -> Result<Option<String>> {
         match entry()?.get_password() {
             Ok(t) => Ok(Some(t)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring::Error::NoEntry) => match legacy_entry()?.get_password() {
+                // Saved before the rename: store it under the new name.
+                Ok(t) => {
+                    if entry()?.set_password(&t).is_ok() {
+                        let _ = legacy_entry()?.delete_credential();
+                    }
+                    Ok(Some(t))
+                }
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(e.into()),
+            },
             Err(e) => Err(e.into()),
         }
     }
     pub fn delete() -> Result<bool> {
+        let old = legacy_entry()?.delete_credential().is_ok();
         match entry()?.delete_credential() {
             Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(keyring::Error::NoEntry) => Ok(old),
             Err(e) => Err(e.into()),
         }
     }
@@ -73,7 +91,7 @@ mod store {
 
 #[cfg(not(windows))]
 mod store {
-    use super::SERVICE;
+    use super::LEGACY_SERVICE;
     use anyhow::Result;
     use std::fs;
     use std::io::Write;
@@ -84,9 +102,9 @@ mod store {
     fn path() -> Result<PathBuf> {
         Ok(crate::paths::data_dir().join("token"))
     }
-    /// Where versions before 0.7 saved it.
+    /// Where versions before 0.7 (and before the rename) saved it.
     fn legacy_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join(SERVICE).join("token"))
+        dirs::config_dir().map(|d| d.join(LEGACY_SERVICE).join("token"))
     }
     pub fn save(token: &str) -> Result<String> {
         let p = path()?;
@@ -163,7 +181,7 @@ struct TokenReply {
 pub fn device_login(api_url: &str, client_id: &str) -> Result<String> {
     let web = web_url(api_url);
     let http = reqwest::blocking::Client::builder()
-        .user_agent(concat!("github-release-archiver/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .build()?;
     // No scopes: read access to public data, which covers public stars and releases.

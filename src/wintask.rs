@@ -5,7 +5,9 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_NAME: &str = "GitHub Release Archiver";
+pub const DEFAULT_NAME: &str = "GitHub-Grab";
+/// Task names used before the rename to GitHub-Grab.
+pub const LEGACY_NAMES: &[&str] = &["GitHub Release Archiver"];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Logon {
@@ -42,7 +44,7 @@ pub fn task_xml(t: &TaskSpec) -> String {
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Checks GitHub for new releases and archives them. Created by github-release-archiver.</Description>
+    <Description>Checks GitHub for new releases and archives them. Created by GitHub-Grab.</Description>
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>
@@ -142,7 +144,7 @@ pub fn install(spec: &TaskSpec, password: Option<&str>) -> Result<()> {
     for unit in xml.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    let tmp = std::env::temp_dir().join(format!("github-release-archiver-task-{}.xml", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("github-grab-task-{}.xml", std::process::id()));
     std::fs::write(&tmp, bytes)?;
     let tmp_s = tmp.display().to_string();
     let mut args = vec!["/Create", "/TN", spec.name.as_str(), "/XML", tmp_s.as_str(), "/F"];
@@ -216,17 +218,17 @@ mod tests {
     fn builds_xml() {
         let spec = TaskSpec {
             name: DEFAULT_NAME.into(),
-            exe: PathBuf::from(r"\\?\C:\Tools\gra\github-release-archiver.exe"),
-            args: r#"--config "C:\Tools\gra\config.toml" run"#.into(),
-            workdir: PathBuf::from(r"C:\Tools\gra"),
+            exe: PathBuf::from(r"\\?\C:\Tools\gg\github-grab.exe"),
+            args: r#"--config "C:\Tools\gg\config.toml" run"#.into(),
+            workdir: PathBuf::from(r"C:\Tools\gg"),
             interval_minutes: 60,
             user: r"PC\eric & co".into(),
             logon: Logon::Password,
         };
         let xml = task_xml(&spec);
         assert!(xml.contains("<Interval>PT60M</Interval>"));
-        assert!(xml.contains(r"<Command>C:\Tools\gra\github-release-archiver.exe</Command>"));
-        assert!(xml.contains("<Arguments>--config &quot;C:\\Tools\\gra\\config.toml&quot; run</Arguments>"));
+        assert!(xml.contains(r"<Command>C:\Tools\gg\github-grab.exe</Command>"));
+        assert!(xml.contains("<Arguments>--config &quot;C:\\Tools\\gg\\config.toml&quot; run</Arguments>"));
         assert!(xml.contains(r"<UserId>PC\eric &amp; co</UserId>"));
         assert!(xml.contains("<LogonType>Password</LogonType>"));
     }
@@ -235,7 +237,7 @@ mod tests {
     fn reads_task_xml_fields() {
         let spec = TaskSpec {
             name: DEFAULT_NAME.into(),
-            exe: PathBuf::from(r"C:\Tools\A & B\github-release-archiver.exe"),
+            exe: PathBuf::from(r"C:\Tools\A & B\github-grab.exe"),
             args: r#"--config "C:\Tools\A & B\config.toml" run"#.into(),
             workdir: PathBuf::from(r"C:\Tools"),
             interval_minutes: 60,
@@ -243,7 +245,7 @@ mod tests {
             logon: Logon::Interactive,
         };
         let xml = task_xml(&spec);
-        assert_eq!(xml_field(&xml, "Command").unwrap(), r"C:\Tools\A & B\github-release-archiver.exe");
+        assert_eq!(xml_field(&xml, "Command").unwrap(), r"C:\Tools\A & B\github-grab.exe");
         assert_eq!(xml_field(&xml, "Arguments").unwrap(), r#"--config "C:\Tools\A & B\config.toml" run"#);
     }
 

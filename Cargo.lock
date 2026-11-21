@@ -430,8 +430,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "github-release-archiver"
-version = "0.7.0"
+name = "github-grab"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

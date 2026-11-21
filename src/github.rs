@@ -83,7 +83,7 @@ pub struct Client {
 impl Client {
     pub fn new(api_url: &str, token: Option<String>, cache_dir: Option<PathBuf>) -> Result<Client> {
         let http = Http::builder()
-            .user_agent(concat!("github-release-archiver/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
             .timeout(None) // no overall limit: assets can be many GB
             .tcp_keepalive(Duration::from_secs(60))

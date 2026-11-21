@@ -1,4 +1,4 @@
-# github-release-archiver
+# GitHub-Grab
 
 Rust CLI (Windows + Linux) that archives GitHub release assets into
 `<archive_root>/<Project>/<tag>/<file>` (all files of each release; no OS sorting).
@@ -38,6 +38,9 @@ Rust CLI (Windows + Linux) that archives GitHub release assets into
 - `config.example.toml`: documented example config, also used by `init` and by tests
 
 ## Conventions
+
+- The program was renamed from github-release-archiver; code that reads the old names
+  (`LEGACY_*` constants) exists so existing installs and archives keep working. Keep it.
 
 - Every config key must be added to the key lists in `config.rs` (`TOP_KEYS` etc.),
   or it will be rejected as unknown, and documented in `config.example.toml`.

@@ -10,7 +10,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const STATE_FILE: &str = ".github-release-archiver.json";
+pub const STATE_FILE: &str = ".github-grab.json";
+/// The state file's name before the rename to GitHub-Grab; read, then replaced.
+pub const LEGACY_STATE_FILE: &str = ".github-release-archiver.json";
+
+/// Reads a project's state file under its current or pre-rename name.
+fn read_state_text(project_dir: &Path) -> Option<String> {
+    fs::read_to_string(project_dir.join(STATE_FILE))
+        .or_else(|_| fs::read_to_string(project_dir.join(LEGACY_STATE_FILE)))
+        .ok()
+}
 
 #[derive(Default, Debug)]
 pub struct Summary {
@@ -30,7 +39,7 @@ pub struct Recorded {
 
 /// Reads the state file of a project folder, if there is one.
 pub fn recorded(project_dir: &Path) -> Option<Recorded> {
-    let text = fs::read_to_string(project_dir.join(STATE_FILE)).ok()?;
+    let text = read_state_text(project_dir)?;
     let state: State = serde_json::from_str(&text).ok()?;
     let dirs = state.releases.into_values().flat_map(|r| r.dirs).collect();
     Some(Recorded { dirs, readme: state.readme })
@@ -60,7 +69,7 @@ pub struct Target {
 
 /// Which repo a project folder belongs to, according to its state file.
 pub fn folder_owner(project_dir: &Path) -> Option<String> {
-    let text = fs::read_to_string(project_dir.join(STATE_FILE)).ok()?;
+    let text = read_state_text(project_dir)?;
     serde_json::from_str::<State>(&text).ok()?.repo
 }
 
@@ -74,13 +83,12 @@ struct ReleaseState {
 
 impl State {
     fn load(project_dir: &Path) -> State {
-        let path = project_dir.join(STATE_FILE);
-        match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                warn!("ignoring unreadable state file {}: {e}", path.display());
+        match read_state_text(project_dir) {
+            Some(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                warn!("ignoring unreadable state file in {}: {e}", project_dir.display());
                 State::default()
             }),
-            Err(_) => State::default(),
+            None => State::default(),
         }
     }
 
@@ -96,6 +104,7 @@ impl State {
             fs::remove_file(&path)?;
         }
         fs::rename(&tmp, &path)?;
+        let _ = fs::remove_file(project_dir.join(LEGACY_STATE_FILE)); // renamed
         Ok(())
     }
 }
@@ -281,7 +290,9 @@ fn save_readme(client: &Client, repo: &str, project_dir: &Path, state: &mut Stat
 
 fn is_plain_file_name(name: &str) -> bool {
     let mut c = Path::new(name).components();
-    matches!((c.next(), c.next()), (Some(std::path::Component::Normal(_)), None)) && name != STATE_FILE
+    matches!((c.next(), c.next()), (Some(std::path::Component::Normal(_)), None))
+        && name != STATE_FILE
+        && name != LEGACY_STATE_FILE
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -357,6 +368,7 @@ fn is_safe_relative(p: &str) -> bool {
     (1..=2).contains(&path.components().count())
         && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
         && p != STATE_FILE
+        && p != LEGACY_STATE_FILE
 }
 
 pub fn human(bytes: u64) -> String {
@@ -404,6 +416,18 @@ mod tests {
         }
         assert!(!p.join("Windows").exists() && !p.join("Linux").exists() && !p.join("Source").exists());
         assert_eq!(state.releases["v1"].dirs.iter().collect::<Vec<_>>(), ["v1"]);
+    }
+
+    #[test]
+    fn renames_pre_rename_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        fs::write(p.join(LEGACY_STATE_FILE), r#"{"repo": "a/b", "releases": {}}"#).unwrap();
+        assert_eq!(folder_owner(p).as_deref(), Some("a/b"));
+        let state = State::load(p);
+        state.save(p).unwrap();
+        assert!(p.join(STATE_FILE).is_file() && !p.join(LEGACY_STATE_FILE).exists());
+        assert_eq!(folder_owner(p).as_deref(), Some("a/b"));
     }
 
     #[test]
