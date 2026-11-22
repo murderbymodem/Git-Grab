@@ -1,7 +1,7 @@
 //! The archiving run: fetch releases and save all their files into <root>/<project>/<tag>/.
 
 use crate::config::Effective;
-use crate::github::{Client, Release};
+use crate::forge::{Forge, Release};
 use crate::util::{glob_match, sanitize};
 use anyhow::{Context, Result};
 use log::{info, warn};
@@ -59,9 +59,13 @@ struct State {
 }
 
 /// One repo to archive, with its resolved folder and options.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Target {
+    /// "owner/name" on github.com, otherwise "host/path" (used in logs and state files).
     pub repo: String,
+    /// The repo's path on its site.
+    pub path: String,
+    pub forge: std::rc::Rc<Forge>,
     /// Project folder name (already sanitized).
     pub folder: String,
     pub opts: Effective,
@@ -109,7 +113,7 @@ impl State {
     }
 }
 
-pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], client: &Client, dry_run: bool, summary: &mut Summary) {
+pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], dry_run: bool, summary: &mut Summary) {
     if targets.is_empty() {
         warn!("no repos to check: add [[repo]] entries or enable [starred] in the config");
     }
@@ -126,7 +130,7 @@ pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], client: &Client
         })
         .collect();
     for t in targets {
-        if let Err(e) = archive_repo(root, t, client, dry_run, summary) {
+        if let Err(e) = archive_repo(root, t, dry_run, summary) {
             warn!("{}: {e:#}", t.repo);
             summary.failed += 1;
         }
@@ -139,7 +143,8 @@ pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], client: &Client
     }
 }
 
-fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary: &mut Summary) -> Result<()> {
+fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -> Result<()> {
+    let client = t.forge.as_ref();
     let rc = t; // keeps the log lines below short: rc.repo
     let opts = &t.opts;
     let project = &t.folder;
@@ -149,7 +154,7 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
     // the same release on every run.
     let wanted = opts.keep_versions.map_or(opts.releases, |k| opts.releases.min(k));
     let releases: Vec<Release> = client
-        .releases(&rc.repo, wanted)?
+        .releases(&t.path, wanted)?
         .into_iter()
         .filter(|r| !r.draft && (opts.include_prereleases || !r.prerelease))
         .take(wanted)
@@ -173,15 +178,15 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
             }
             let dest = project_dir.join(&tag).join(sanitize(&asset.name));
             dirs.insert(tag.clone());
-            fetch(client, summary, dry_run, &rc.repo, &dest, &asset.url, "application/octet-stream", Some(asset.size), asset.digest.as_deref());
+            fetch(client, summary, dry_run, &rc.repo, &dest, &asset.url, asset.accept, asset.size, asset.digest.as_deref());
         }
 
         if opts.include_source {
-            if let Some(url) = &rel.zipball_url {
+            if let Some((url, accept)) = &rel.source_zip {
                 let dest = project_dir.join(&tag).join(sanitize(&format!("{project}-{}-source.zip", rel.tag_name)));
                 dirs.insert(tag.clone());
                 // Size isn't known ahead of time for generated archives; skip if present.
-                fetch(client, summary, dry_run, &rc.repo, &dest, url, "application/vnd.github+json", None, None);
+                fetch(client, summary, dry_run, &rc.repo, &dest, url, accept, None, None);
             }
         }
 
@@ -206,7 +211,7 @@ fn archive_repo(root: &Path, t: &Target, client: &Client, dry_run: bool, summary
         // Only for projects that have archived files, so starred repos without
         // releases don't get folders just for a README.
         if opts.save_readme && project_dir.is_dir() {
-            if let Err(e) = save_readme(client, &rc.repo, &project_dir, &mut state) {
+            if let Err(e) = save_readme(client, &rc.repo, &t.path, &project_dir, &mut state) {
                 warn!("{}: couldn't save the README: {e:#}", rc.repo);
             }
         }
@@ -265,8 +270,8 @@ fn move_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 /// Writes the repo's README into the project folder when it's new or changed.
-fn save_readme(client: &Client, repo: &str, project_dir: &Path, state: &mut State) -> Result<()> {
-    let Some((name, bytes)) = client.readme(repo)? else { return Ok(()) };
+fn save_readme(client: &Forge, repo: &str, path: &str, project_dir: &Path, state: &mut State) -> Result<()> {
+    let Some((name, bytes)) = client.readme(path)? else { return Ok(()) };
     let name = sanitize(&name);
     let dest = project_dir.join(&name);
     if fs::read(&dest).ok().as_deref() != Some(bytes.as_slice()) {
@@ -296,7 +301,7 @@ fn is_plain_file_name(name: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fetch(client: &Client, summary: &mut Summary, dry_run: bool, repo: &str, dest: &Path, url: &str, accept: &str, size: Option<u64>, digest: Option<&str>) {
+fn fetch(client: &Forge, summary: &mut Summary, dry_run: bool, repo: &str, dest: &Path, url: &str, accept: &str, size: Option<u64>, digest: Option<&str>) {
     if let Ok(meta) = fs::metadata(dest) {
         if size.is_none_or(|s| s == meta.len()) {
             summary.skipped += 1;

@@ -36,6 +36,39 @@ pub struct Config {
     pub starred: Option<StarredConfig>,
     #[serde(default, rename = "repo")]
     pub repos: Vec<RepoConfig>,
+    /// Users or organizations whose repos are all archived (any site).
+    #[serde(default, rename = "account")]
+    pub accounts: Vec<AccountConfig>,
+    /// Settings for sites other than github.com: kind and login token.
+    #[serde(default, rename = "site")]
+    pub sites: Vec<SiteConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AccountConfig {
+    /// The account's page, e.g. "https://git.magicbean.dev/MagicBeanDev", or
+    /// "host/name", or just "name" for a GitHub account.
+    pub url: String,
+    #[serde(default)]
+    pub ignore: Vec<String>,
+    #[serde(default = "yes")]
+    pub include_forks: bool,
+    #[serde(default = "yes")]
+    pub include_archived: bool,
+    #[serde(flatten)]
+    pub options: RepoOptions,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteConfig {
+    /// "https://git.example.dev" or just the host.
+    pub url: String,
+    /// "github", "gitlab", "gitea" or "forgejo". Detected if left out.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// Token for this site (or use `login --site`).
+    pub token: Option<String>,
 }
 
 /// Options that can be set globally and overridden per repo (or for starred repos).
@@ -111,12 +144,13 @@ fn yes() -> bool {
 const OPTION_KEYS: &[&str] =
     &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "save_readme"];
 const TOP_KEYS: &[&str] = &[
-    "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo",
+    "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo", "account", "site",
 ];
 const REPO_KEYS: &[&str] = &["repo", "folder"];
 /// Settings from older versions that are now ignored (warned about, not rejected).
 const RETIRED_KEYS: &[&str] = &["only_os", "os_rules"];
 const STARRED_KEYS: &[&str] = &["enabled", "user", "ignore", "include_forks", "include_archived"];
+const ACCOUNT_KEYS: &[&str] = &["url", "ignore", "include_forks", "include_archived"];
 
 /// Rejects misspelled keys, which serde would otherwise silently ignore.
 fn check_unknown_keys(text: &str) -> Result<()> {
@@ -137,6 +171,16 @@ fn check_unknown_keys(text: &str) -> Result<()> {
         for k in s.keys() {
             if !known(k, STARRED_KEYS) {
                 bail!("unknown setting \"{k}\" in [starred]");
+            }
+        }
+    }
+    if let Some(toml::Value::Array(accounts)) = table.get("account") {
+        for a in accounts.iter().filter_map(|a| a.as_table()) {
+            let name = a.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            for k in a.keys() {
+                if !known(k, ACCOUNT_KEYS) {
+                    bail!("unknown setting \"{k}\" in [[account]] {name}");
+                }
             }
         }
     }
@@ -211,14 +255,24 @@ impl Config {
         }
         let mut folders = std::collections::HashSet::new();
         for r in &self.repos {
-            let parts: Vec<&str> = r.repo.split('/').collect();
-            if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
-                bail!("repo \"{}\" must be in the form owner/name", r.repo);
-            }
+            crate::forge::Location::parse(&r.repo, 2).with_context(|| format!("[[repo]] {}", r.repo))?;
             check_counts(&r.repo, &r.options)?;
             let folder = self.project_folder(r).to_lowercase();
             if !folders.insert(folder.clone()) {
                 bail!("two repos use the project folder \"{folder}\"; set `folder` on one of them");
+            }
+        }
+        for a in &self.accounts {
+            crate::forge::Location::parse(&a.url, 1).with_context(|| format!("[[account]] {}", a.url))?;
+            check_counts(&a.url, &a.options)?;
+        }
+        for site in &self.sites {
+            crate::forge::Location::parse(&format!("{}/x", site.url.trim_end_matches('/')), 1)
+                .with_context(|| format!("[[site]] {}", site.url))?;
+            if let Some(k) = &site.kind {
+                if crate::forge::Kind::parse(k).is_none() {
+                    bail!("[[site]] {}: type must be \"github\", \"gitlab\", \"gitea\" or \"forgejo\"", site.url);
+                }
             }
         }
         Ok(())
@@ -229,8 +283,18 @@ impl Config {
     }
 
     pub fn project_folder(&self, r: &RepoConfig) -> String {
-        let name = r.folder.clone().unwrap_or_else(|| r.repo.split('/').nth(1).unwrap_or(&r.repo).to_string());
+        let name = r.folder.clone().unwrap_or_else(|| match crate::forge::Location::parse(&r.repo, 2) {
+            Ok(l) => l.name().to_string(),
+            Err(_) => r.repo.clone(),
+        });
         crate::util::sanitize(&name)
+    }
+
+    /// The [[site]] entry for a host, if any.
+    pub fn site(&self, host: &str) -> Option<&SiteConfig> {
+        self.sites.iter().find(|s| {
+            crate::forge::Location::parse(&format!("{}/x", s.url.trim_end_matches('/')), 1).is_ok_and(|l| l.host == host)
+        })
     }
 
     /// Merges `layer` (per-repo or [starred] options) over the global defaults.

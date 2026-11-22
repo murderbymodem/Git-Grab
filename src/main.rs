@@ -1,6 +1,7 @@
 mod archive;
 mod auth;
 mod config;
+mod forge;
 mod github;
 mod logging;
 mod mirror;
@@ -48,15 +49,21 @@ enum Command {
     },
     /// Log in to GitHub so starred repos can be listed and the rate limit is higher
     Login {
-        /// OAuth App client ID for browser login (device flow). Without one, you paste a token
+        /// Log in to another site instead of GitHub, e.g. gitlab.com or https://git.example.dev
+        #[arg(long)]
+        site: Option<String>,
+        /// OAuth App client ID for browser login to GitHub (device flow). Without one, you paste a token
         #[arg(long)]
         client_id: Option<String>,
         /// Read the token from standard input instead of prompting
         #[arg(long)]
         with_token: bool,
     },
-    /// Remove the saved GitHub login
-    Logout,
+    /// Remove a saved login (GitHub, or another site with --site)
+    Logout {
+        #[arg(long)]
+        site: Option<String>,
+    },
     /// Show the config, login and archive status
     Status,
     /// Check every repo once and exit
@@ -146,14 +153,21 @@ fn real_main(cli: Cli) -> Result<ExitCode> {
     match command {
         Command::Setup => setup::run(&config_path)?,
         Command::Init { archive_root, force } => init(&config_path, archive_root.as_deref(), force)?,
-        Command::Login { client_id, with_token } => {
+        Command::Login { site: Some(site), with_token, .. } => {
+            login_site(&config_path, &site, with_token)?;
+        }
+        Command::Login { site: None, client_id, with_token } => {
             login(&config_path, client_id, with_token)?;
         }
-        Command::Logout => {
-            if auth::delete()? {
-                println!("Saved login removed. (The token itself stays valid until you revoke it on GitHub.)");
+        Command::Logout { site } => {
+            let host = match &site {
+                Some(s) => forge::Location::parse(&format!("{}/x", s.trim_end_matches('/')), 1)?.host,
+                None => forge::GITHUB_HOST.to_string(),
+            };
+            if auth::delete_for(&host)? {
+                println!("Saved login for {host} removed. (The token itself stays valid until you revoke it there.)");
             } else {
-                println!("No saved login.");
+                println!("No saved login for {host}.");
             }
         }
         Command::Status => status(&config_path)?,
@@ -241,7 +255,7 @@ fn status(config_path: &Path) -> Result<()> {
             let ok = if m.is_dir() { "reachable" } else { "NOT reachable" };
             println!("Mirror:       {} ({ok})", m.display());
         }
-        println!("Repos:        {} listed", c.repos.len());
+        println!("Repos:        {} listed, {} account(s) followed", c.repos.len(), c.accounts.len());
         match c.starred_enabled() {
             Some(s) => println!("Starred:      on ({})", s.user.as_deref().unwrap_or("logged-in account")),
             None => println!("Starred:      off"),
@@ -262,6 +276,13 @@ fn status(config_path: &Path) -> Result<()> {
             }
         }
     }
+    if let Some(c) = &cfg {
+        for host in other_sites(c) {
+            let token = auth::resolve_site(&host, c.site(&host).and_then(|s| s.token.as_deref()), None);
+            let state = if token.is_some() { "token saved" } else { "none (fine for public projects; `login --site`)" };
+            println!("Login {host}: {state}");
+        }
+    }
     if cfg!(windows) {
         let state = wintask::status(wintask::DEFAULT_NAME).map(|t| {
             t.lines()
@@ -276,9 +297,8 @@ fn status(config_path: &Path) -> Result<()> {
 
 /// Returns true if anything failed.
 fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
-    let token = auth::resolve(cfg.github_token.as_deref()).map(|(t, _)| t);
-    if token.is_none() {
-        warn!("not logged in; limited to 60 GitHub API requests/hour (run `login`)");
+    if uses_github(cfg) && auth::resolve(cfg.github_token.as_deref()).is_none() {
+        warn!("not logged in to GitHub; limited to 60 GitHub API requests/hour (run `login`)");
     }
     if !dry_run && !cfg.archive_root.is_dir() {
         bail!(
@@ -286,18 +306,11 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
             cfg.archive_root.display()
         );
     }
-    let client = github::Client::new(&cfg.api_url, token, cache_dir())?;
     let mut s = archive::Summary::default();
-    let targets = match targets::build(cfg, &client) {
-        Ok(t) => t,
-        Err(e) => {
-            // Still check the [[repo]] entries if the starred list can't be fetched.
-            warn!("cannot list starred repos: {e:#}");
-            s.failed += 1;
-            explicit_targets(cfg)
-        }
-    };
-    archive::run(&cfg.archive_root, &cfg.mirrors, &targets, &client, dry_run, &mut s);
+    // A site, account or star list that fails only skips its own repos.
+    let (targets, failures) = targets::build(cfg, cache_dir());
+    s.failed += failures;
+    archive::run(&cfg.archive_root, &cfg.mirrors, &targets, dry_run, &mut s);
     info!(
         "done: {} {}, {} already archived, {} failed, {} old release(s) pruned, {} transferred",
         s.downloaded,
@@ -319,11 +332,58 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
     Ok(s.failed > 0)
 }
 
-fn explicit_targets(cfg: &Config) -> Vec<archive::Target> {
-    cfg.repos
+/// Whether anything in the config is on github.com.
+fn uses_github(cfg: &Config) -> bool {
+    let on_github = |spec: &str, n| forge::Location::parse(spec, n).is_ok_and(|l| l.host == forge::GITHUB_HOST);
+    cfg.starred_enabled().is_some() || cfg.repos.iter().any(|r| on_github(&r.repo, 2)) || cfg.accounts.iter().any(|a| on_github(&a.url, 1))
+}
+
+/// Hosts other than github.com that the config uses.
+fn other_sites(cfg: &Config) -> Vec<String> {
+    let mut hosts: Vec<String> = cfg
+        .repos
         .iter()
-        .map(|r| archive::Target { repo: r.repo.clone(), folder: cfg.project_folder(r), opts: cfg.effective(&r.options) })
-        .collect()
+        .filter_map(|r| forge::Location::parse(&r.repo, 2).ok())
+        .chain(cfg.accounts.iter().filter_map(|a| forge::Location::parse(&a.url, 1).ok()))
+        .chain(cfg.sites.iter().filter_map(|s| forge::Location::parse(&format!("{}/x", s.url.trim_end_matches('/')), 1).ok()))
+        .map(|l| l.host)
+        .filter(|h| h != forge::GITHUB_HOST)
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
+
+/// Logs in to a site other than github.com by pasting a token.
+fn login_site(config_path: &Path, site: &str, with_token: bool) -> Result<String> {
+    let cfg = Config::load(config_path).ok();
+    let loc = forge::Location::parse(&format!("{}/x", site.trim_end_matches('/')), 1)?;
+    if loc.host == forge::GITHUB_HOST {
+        return login(config_path, None, with_token);
+    }
+    let site_cfg = cfg.as_ref().and_then(|c| c.site(&loc.host));
+    let kind = match site_cfg.and_then(|s| s.kind.as_deref()).and_then(forge::Kind::parse).or_else(|| forge::Kind::known(&loc.host)) {
+        Some(k) => k,
+        None => forge::detect(&loc.base)?,
+    };
+    let help = forge::Forge::new(&loc.base, &loc.host, kind, None, None, "")?.token_help();
+    let token = if with_token {
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        line.trim().to_string()
+    } else {
+        println!("{} is a {} site. {help}.", loc.host, kind.label());
+        rpassword::prompt_password("Paste the token (input is hidden): ")?.trim().to_string()
+    };
+    if token.is_empty() {
+        bail!("no token given");
+    }
+    let user = forge::Forge::new(&loc.base, &loc.host, kind, Some(token.clone()), None, "")?
+        .current_user()
+        .context("the token didn't work")?;
+    let place = auth::save_for(&loc.host, &token)?;
+    println!("Logged in to {} as {user}. Token saved in {place}.", loc.host);
+    Ok(user)
 }
 
 fn watch(path: &Path) -> Result<()> {

@@ -1,7 +1,8 @@
 //! Guided setup, shown when the program is double-clicked (or run as `setup`).
 
 use crate::config::Config;
-use crate::paths::{self, Location};
+use crate::forge::Location;
+use crate::paths::{self, Location as Place};
 use crate::{auth, wintask};
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, Write};
@@ -13,14 +14,14 @@ pub fn run(config_path: &Path) -> Result<()> {
     println!("as <Project>\\<version>\\<file>.\n");
 
     match paths::location() {
-        Location::InsideZip => {
+        Place::InsideZip => {
             println!("It looks like this was opened straight from the zip file, so Windows is");
             println!("running it from a temporary folder. Extract the zip first (right-click it,");
             println!("Extract All), put the folder somewhere permanent such as C:\\Tools, and");
             println!("start the program from there.");
             return Ok(());
         }
-        Location::Downloads => {
+        Place::Downloads => {
             println!("This program is in your Downloads folder. Its settings are saved next to it,");
             println!("and the hourly check runs it from where it is, so it's best to move the whole");
             println!("folder somewhere permanent first, for example C:\\Tools\\GitHub-Grab,");
@@ -30,7 +31,7 @@ pub fn run(config_path: &Path) -> Result<()> {
             }
             println!();
         }
-        Location::Fine => {}
+        Place::Fine => {}
     }
     if !paths::is_portable() {
         println!("This program's folder can't be written to, so settings are kept in");
@@ -239,19 +240,44 @@ fn first_time(config_path: &Path) -> Result<()> {
             (!u.is_empty()).then_some(Some(u))
         }
     };
-    println!("Add specific repos as owner/name (e.g. BurntSushi/ripgrep), one per line.");
+    println!("Add specific projects, one per line: owner/name for GitHub (e.g. BurntSushi/ripgrep),");
+    println!("or paste a link from GitHub, GitLab, Gitea, Forgejo or Codeberg.");
     println!("Press Enter on an empty line when done.");
     let mut repos = Vec::new();
     loop {
-        let r = ask("Repo", "");
+        let r = ask("Project", "");
         if r.is_empty() {
             break;
         }
-        let r = r.trim_start_matches("https://github.com/").trim_end_matches('/').to_string();
-        if r.split('/').count() == 2 && !r.starts_with('/') && !r.ends_with('/') {
-            repos.push(r);
-        } else {
-            println!("  Use the form owner/name.");
+        match Location::parse(&r, 2) {
+            Ok(l) => repos.push(spec(&l)),
+            Err(e) => println!("  {e:#}"),
+        }
+    }
+    println!("\nYou can also follow every project of a user or organization, on any of those");
+    println!("sites. Paste their page, e.g. https://git.magicbean.dev/MagicBeanDev");
+    let mut accounts = Vec::new();
+    loop {
+        let a = ask("Account (Enter when done)", "");
+        if a.is_empty() {
+            break;
+        }
+        match Location::parse(&a, 1) {
+            Ok(l) => accounts.push(spec(&l)),
+            Err(e) => println!("  {e:#}"),
+        }
+    }
+    // Other sites only need a login for private projects.
+    let mut asked = std::collections::HashSet::new();
+    for (s, n) in repos.iter().map(|r| (r, 2)).chain(accounts.iter().map(|a| (a, 1))) {
+        let Ok(l) = Location::parse(s, n) else { continue };
+        if l.host == crate::forge::GITHUB_HOST || !asked.insert(l.host.clone()) {
+            continue;
+        }
+        if yes_no(&format!("Log in to {}? Only needed for private projects.", l.host), false) {
+            if let Err(e) = crate::login_site(config_path, &l.base, false) {
+                println!("  Login failed: {e:#}");
+            }
         }
     }
 
@@ -270,6 +296,7 @@ fn first_time(config_path: &Path) -> Result<()> {
         mirrors: &mirrors,
         starred_user: starred_user.as_ref().map(|u| u.as_deref()),
         repos: &repos,
+        accounts: &accounts,
         releases,
         prune,
     });
@@ -356,8 +383,19 @@ pub struct Answers<'a> {
     /// None = starred off; Some(None) = the logged-in account; Some(Some(u)) = user u.
     pub starred_user: Option<Option<&'a str>>,
     pub repos: &'a [String],
+    pub accounts: &'a [String],
     pub releases: usize,
     pub prune: bool,
+}
+
+/// How a project or account is written in the config: owner/name for
+/// github.com, otherwise its full address.
+fn spec(l: &Location) -> String {
+    if l.host == crate::forge::GITHUB_HOST {
+        l.path.clone()
+    } else {
+        format!("{}/{}", l.base, l.path)
+    }
 }
 
 /// TOML string with correct quoting/escaping for any input.
@@ -395,6 +433,9 @@ pub fn build_config(a: &Answers) -> String {
     t.push_str("# ignore = [\"someorg/*\"]   # starred repos to skip\n");
     for r in a.repos {
         t.push_str(&format!("\n[[repo]]\nrepo = {}\n", q(r)));
+    }
+    for acc in a.accounts {
+        t.push_str(&format!("\n[[account]]   # every project of this user or organization\nurl = {}\n", q(acc)));
     }
     t
 }
@@ -455,6 +496,7 @@ mod tests {
             mirrors: &[r"D:\Archive".to_string()],
             starred_user: Some(None),
             repos: &repos,
+            accounts: &["https://git.magicbean.dev/MagicBeanDev".to_string()],
             releases: 2,
             prune: true,
         });
@@ -464,12 +506,14 @@ mod tests {
         assert_eq!(cfg.defaults.keep_versions, Some(2));
         assert!(cfg.starred_enabled().unwrap().user.is_none());
         assert_eq!(cfg.repos[0].repo, "BurntSushi/ripgrep");
+        assert_eq!(cfg.accounts[0].url, "https://git.magicbean.dev/MagicBeanDev");
 
         let text = build_config(&Answers {
             archive_root: "/mnt/x",
             mirrors: &[],
             starred_user: Some(Some("someone")),
             repos: &[],
+            accounts: &[],
             releases: 1,
             prune: false,
         });

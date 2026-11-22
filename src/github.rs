@@ -1,7 +1,9 @@
-//! Minimal GitHub REST client: releases, starred repos, the current user, and
-//! asset downloads. JSON responses are cached with ETags, so unchanged data
-//! comes back as "304 Not Modified", which doesn't count against the API rate
-//! limit. That keeps hourly checks of many repos cheap.
+//! HTTP client shared by all sites, plus the GitHub REST API: releases,
+//! starred repos, the current user, and asset downloads. (GitLab and
+//! Gitea/Forgejo use the same client through `forge.rs`.) JSON responses are
+//! cached with ETags, so unchanged data comes back as "304 Not Modified",
+//! which doesn't count against GitHub's rate limit. That keeps hourly checks
+//! of many repos cheap.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -73,15 +75,41 @@ struct CacheEntry {
     body: String,
 }
 
+/// How a site expects the token to be sent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AuthStyle {
+    /// GitHub: `Authorization: Bearer <token>`
+    Bearer,
+    /// Gitea/Forgejo: `Authorization: token <token>`
+    Token,
+    /// GitLab: `PRIVATE-TOKEN: <token>`
+    PrivateToken,
+}
+
 pub struct Client {
     http: Http,
     api_url: String,
     token: Option<String>,
     cache_dir: Option<PathBuf>,
+    auth: AuthStyle,
+    json_accept: &'static str,
+    /// The token is only ever sent to this host (asset links can point elsewhere).
+    token_host: Option<String>,
 }
 
 impl Client {
+    /// A GitHub API client.
     pub fn new(api_url: &str, token: Option<String>, cache_dir: Option<PathBuf>) -> Result<Client> {
+        Self::for_site(api_url, token, cache_dir, AuthStyle::Bearer, "application/vnd.github+json")
+    }
+
+    pub fn for_site(
+        api_url: &str,
+        token: Option<String>,
+        cache_dir: Option<PathBuf>,
+        auth: AuthStyle,
+        json_accept: &'static str,
+    ) -> Result<Client> {
         let http = Http::builder()
             .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
@@ -91,15 +119,28 @@ impl Client {
         if let Some(d) = &cache_dir {
             let _ = fs::create_dir_all(d);
         }
-        Ok(Client { http, api_url: api_url.trim_end_matches('/').to_string(), token, cache_dir })
+        let api_url = api_url.trim_end_matches('/').to_string();
+        let token_host = host_of(&api_url);
+        Ok(Client { http, api_url, token, cache_dir, auth, json_accept, token_host })
+    }
+
+    pub fn api_url(&self) -> &str {
+        &self.api_url
     }
 
     fn request(&self, url: &str, accept: &str, etag: Option<&str>) -> Result<Response> {
-        let mut req = self.http.get(url).header(ACCEPT, accept).header("X-GitHub-Api-Version", "2022-11-28");
-        // reqwest drops the Authorization header when a redirect leaves the
-        // host, so the token is never sent to the CDN serving the file.
-        if let Some(t) = &self.token {
-            req = req.header(AUTHORIZATION, format!("Bearer {t}"));
+        let mut req = self.http.get(url).header(ACCEPT, accept);
+        if self.auth == AuthStyle::Bearer {
+            req = req.header("X-GitHub-Api-Version", "2022-11-28");
+        }
+        // Only to the site's own host. reqwest also drops Authorization when a
+        // redirect leaves the host, so the token never reaches a CDN.
+        if let Some(t) = self.token.as_ref().filter(|_| host_of(url).is_some() && host_of(url) == self.token_host) {
+            req = match self.auth {
+                AuthStyle::Bearer => req.header(AUTHORIZATION, format!("Bearer {t}")),
+                AuthStyle::Token => req.header(AUTHORIZATION, format!("token {t}")),
+                AuthStyle::PrivateToken => req.header("PRIVATE-TOKEN", t.as_str()),
+            };
         }
         if let Some(e) = etag {
             req = req.header(IF_NONE_MATCH, e);
@@ -114,7 +155,7 @@ impl Client {
         let cached: Option<CacheEntry> =
             cache_file.as_ref().and_then(|f| fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str(&t).ok());
 
-        let resp = self.request(url, "application/vnd.github+json", cached.as_ref().map(|c| c.etag.as_str()))?;
+        let resp = self.request(url, self.json_accept, cached.as_ref().map(|c| c.etag.as_str()))?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             if let Some(c) = cached {
                 debug!("not modified: {url}");
@@ -136,7 +177,7 @@ impl Client {
     }
 
     /// Like `get_json`, but a 404 gives `Ok(None)`.
-    fn get_json_opt<T: DeserializeOwned>(&self, url: &str) -> Result<Option<(T, Option<String>)>> {
+    pub fn get_json_opt<T: DeserializeOwned>(&self, url: &str) -> Result<Option<(T, Option<String>)>> {
         match self.get_json_raw(url)? {
             None => Ok(None),
             Some((body, next)) => {
@@ -146,7 +187,7 @@ impl Client {
         }
     }
 
-    fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<(T, Option<String>)> {
+    pub fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<(T, Option<String>)> {
         self.get_json_opt(url)?
             .ok_or_else(|| anyhow!("not found: {url} (check the name; private repos need a token)"))
     }
@@ -197,10 +238,44 @@ impl Client {
         Ok(all)
     }
 
-    pub fn current_user(&self) -> Result<User> {
+    /// A small file's contents (e.g. a README), or `None` on 404.
+    pub fn get_bytes(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        let resp = self.request(url, "*/*", None)?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = check_status(resp, url)?;
+        Ok(Some(resp.bytes()?.to_vec()))
+    }
+
+    /// Repos of a GitHub organization or user.
+    pub fn account_repos(&self, owner: &str) -> Result<Vec<RepoInfo>> {
+        let org = format!("{}/orgs/{owner}/repos?per_page=100", self.api_url);
+        let first = match self.get_json_opt::<Vec<RepoInfo>>(&org)? {
+            Some(page) => page,
+            None => self.get_json(&format!("{}/users/{owner}/repos?per_page=100", self.api_url))?,
+        };
+        let (mut all, mut url) = (first.0, first.1);
+        let mut pages = 1;
+        while let Some(u) = url.filter(|_| pages < 100) {
+            let (mut page, next): (Vec<RepoInfo>, _) = self.get_json(&u)?;
+            all.append(&mut page);
+            url = next;
+            pages += 1;
+        }
+        Ok(all)
+    }
+
+    /// A field (the login name) of the token owner's `/user` record.
+    pub fn current_user_field(&self, field: &str) -> Result<String> {
         let url = format!("{}/user", self.api_url);
-        let resp = check_status(self.request(&url, "application/vnd.github+json", None)?, &url)?;
-        Ok(resp.json()?)
+        let resp = check_status(self.request(&url, self.json_accept, None)?, &url)?;
+        let v: serde_json::Value = resp.json()?;
+        v.get(field).and_then(|l| l.as_str()).map(str::to_string).ok_or_else(|| anyhow!("unexpected reply from {url}"))
+    }
+
+    pub fn current_user(&self) -> Result<User> {
+        Ok(User { login: self.current_user_field("login")? })
     }
 
     /// Downloads `url` to `dest` via a `.part` file, checking size and SHA-256
@@ -254,6 +329,16 @@ impl Client {
     }
 }
 
+/// "host[:port]" of a URL.
+pub fn host_of(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?.to_ascii_lowercase();
+    Some(match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host,
+    })
+}
+
 pub fn part_path(dest: &Path) -> PathBuf {
     let mut s = dest.as_os_str().to_owned();
     s.push(".part");
@@ -291,7 +376,8 @@ fn check_status(resp: Response, url: &str) -> Result<Response> {
         ));
     }
     if status == StatusCode::UNAUTHORIZED {
-        return Err(anyhow!("GitHub rejected the token (expired or revoked?). Run `login` again"));
+        let host = host_of(url).unwrap_or_default();
+        return Err(anyhow!("{host} rejected the token (expired or revoked?). Run `login` again"));
     }
     if status == StatusCode::NOT_FOUND {
         return Err(anyhow!("not found: {url} (check the name; private repos need a token)"));

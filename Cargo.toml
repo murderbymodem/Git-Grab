@@ -1,6 +1,6 @@
 [package]
 name = "github-grab"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "GitHub-Grab: watches GitHub repositories (or your starred repos) for new releases and archives every file into per-project, per-version folders"
 license = "GPL-3.0-only"

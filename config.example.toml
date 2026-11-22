@@ -53,6 +53,23 @@ include_source = false
 # what a project is. Updated when it changes on GitHub.
 save_readme = true
 
+# ---- Other sites ----
+# Any [[repo]] or [[account]] can be on GitLab, Gitea, Forgejo or Codeberg:
+# paste a link to it. The kind of site is detected; to set it yourself (or add
+# a token for private projects, or use `login --site`), add a [[site]] entry:
+# [[site]]
+# url = "https://git.magicbean.dev"
+# type = "forgejo"      # "github" (Enterprise), "gitlab", "gitea" or "forgejo"
+# token = "..."
+
+# ---- Whole accounts ----
+# Every project of a user or organization, on any site. New projects are
+# picked up automatically. Same options as [starred].
+# [[account]]
+# url = "https://git.magicbean.dev/MagicBeanDev"
+# ignore = ["MagicBeanDev/old-*"]
+# include_forks = false
+
 # ---- Starred repos ----
 # Archive every repo starred by an account, in addition to the [[repo]] list.
 # The list is re-read each run, so starring a repo on GitHub adds it automatically.
@@ -69,6 +86,7 @@ enabled = false
 
 # ---- Repositories ----
 
+# owner/name for GitHub, or a link to a project on any supported site.
 [[repo]]
 repo = "BurntSushi/ripgrep"          # project folder defaults to the repo name: "ripgrep"
 

@@ -1,8 +1,9 @@
 # GitHub-Grab
 
-Checks GitHub repositories, including everything you've starred, for new
-releases and archives every file from each release on a network share, one
-folder per project and one per version:
+Checks projects on GitHub, GitLab, Gitea, Forgejo and Codeberg for new
+releases, including everything you've starred on GitHub or every project of a
+user or organization, and archives every file from each release on a network
+share, one folder per project and one per version:
 
 ```
 \\nas\software\
@@ -31,6 +32,12 @@ It's a single program for Windows and Linux.
 
 ## Features
 
+- **Not just GitHub.** Projects on GitLab (gitlab.com or self-hosted), Gitea,
+  Forgejo (Codeberg, or a site like git.magicbean.dev), and GitHub Enterprise.
+  The kind of site is detected automatically.
+- **Whole accounts.** Follow every project of a user or organization, such as
+  `https://git.magicbean.dev/MagicBeanDev`, so new projects are picked up as
+  they appear.
 - **Starred repos.** Log in once, and every repo you star on GitHub is
   archived automatically. You can also follow another account's public stars.
 - **Hourly checks on Windows.** `task install` sets up a Task Scheduler job.
@@ -159,6 +166,52 @@ The token is looked up in this order: `github_token` in the config, then the
 `GITHUB_TOKEN` or `GH_TOKEN` environment variable, then the saved login.
 `status` shows which one is in use. `logout` deletes the saved token.
 
+## Other sites: GitLab, Gitea, Forgejo, Codeberg
+
+Anywhere a project goes in the config, you can use `owner/name` for GitHub or
+paste a link from any supported site:
+
+```toml
+[[repo]]
+repo = "BurntSushi/ripgrep"                                # GitHub
+[[repo]]
+repo = "https://gitlab.com/inkscape/inkscape"              # GitLab (subgroups work)
+[[repo]]
+repo = "https://codeberg.org/forgejo/forgejo"              # Codeberg (Forgejo)
+
+# Every project of a user or organization, on any of these sites.
+[[account]]
+url = "https://git.magicbean.dev/MagicBeanDev"
+ignore = ["MagicBeanDev/old-*"]   # optional, like [starred]
+include_forks = false              # optional
+```
+
+GitHub-Grab finds out what kind of site it is talking to by asking the site.
+github.com, gitlab.com and codeberg.org are known. If a site can't be
+identified, or you'd rather not wait for the check, say what it is:
+
+```toml
+[[site]]
+url = "https://git.magicbean.dev"
+type = "forgejo"        # "github" (Enterprise), "gitlab", "gitea" or "forgejo"
+```
+
+**Logging in** isn't needed for public projects. For private ones, run
+`github-grab login --site https://git.magicbean.dev` and paste a token. It
+shows where to create one: GitLab needs the `read_api` scope, and Gitea/Forgejo
+needs read access to repositories. Each site's token is stored separately and
+only ever sent to that site. Release files hosted somewhere else get no token.
+`github-grab logout --site …` removes it. You can also put `token = "…"` in the
+site's `[[site]]` entry.
+
+Differences between sites:
+- GitLab doesn't report file sizes for release links, so a file that's already
+  archived is recognised by name. GitHub and Gitea also compare sizes.
+- Only GitHub provides checksums, which are verified.
+- GitLab's "upcoming" releases count as prereleases.
+- Starred repos are GitHub only. For other sites, use `[[account]]` or list
+  the projects.
+
 ## Starred repos
 
 ```toml
@@ -250,7 +303,7 @@ The first command saves the token for the `archiver` user. Logs:
 |---|---|
 | `setup` | Guided setup, or a menu if already set up (also what double-clicking runs) |
 | `init [--archive-root PATH]` | Create a starter config |
-| `login` / `logout` / `status` | Manage the GitHub login and show the current setup |
+| `login` / `logout [--site URL]` / `status` | Manage logins (GitHub, or another site with `--site`) and show the current setup |
 | `run [--dry-run]` | Check everything once |
 | `watch` | Keep running, checking every `interval_minutes` and re-reading the config each time |
 | `task install/run/status/remove` | Windows scheduled task |
