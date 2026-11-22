@@ -6,7 +6,7 @@ use crate::util::{glob_match, sanitize};
 use anyhow::{Context, Result};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +23,8 @@ pub struct Summary {
     pub failed: usize,
     pub pruned: usize,
     pub bytes: u64,
+    /// Project folders removed because their repo was unstarred.
+    pub unstarred: usize,
     pub mirror: crate::mirror::Stats,
 }
 
@@ -50,6 +52,9 @@ struct State {
     /// File name of the README copy in the project folder, if one was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     readme: Option<String>,
+    /// Archived only because it was starred, so `remove_unstarred` may delete it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    via_stars: bool,
     releases: BTreeMap<String, ReleaseState>,
 }
 
@@ -66,6 +71,8 @@ pub struct Target {
     /// Project folder name inside it (already sanitized).
     pub folder: String,
     pub opts: Effective,
+    /// Archived because it's starred (not listed in [[repo]] or [[account]]).
+    pub via_stars: bool,
 }
 
 /// Which repo a project folder belongs to, according to its state file.
@@ -196,6 +203,8 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
         if state.repo.is_none() && project_dir.exists() {
             state.repo = Some(rc.repo.clone());
         }
+        // Updated every run: listing a starred repo in [[repo]] protects it.
+        state.via_stars = t.via_stars;
         if let Some(keep) = opts.keep_versions {
             summary.pruned += prune(&mut state, &project_dir, keep, &rc.repo);
         }
@@ -221,6 +230,44 @@ fn select_releases(all: Vec<Release>, opts: &Effective, wanted: usize) -> (Vec<R
     let use_pre = opts.include_prereleases || fallback;
     let picked = published.into_iter().filter(|r| use_pre || !r.prerelease).take(wanted).collect();
     (picked, fallback)
+}
+
+/// Deletes the folders of projects that were archived only because they were
+/// starred and are no longer starred, in `site_dir` (the GitHub site folder of
+/// the archive or a mirror). `keep` holds every repo still starred or still
+/// being archived for another reason (lowercase ids). Only files the state
+/// file records are deleted; a folder is removed only once it's empty.
+pub fn remove_unstarred(site_dir: &Path, keep: &HashSet<String>, dry_run: bool, summary: &mut Summary) {
+    let Ok(entries) = fs::read_dir(site_dir) else { return };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Some(text) = read_state_text(&dir) else { continue };
+        let Ok(state) = serde_json::from_str::<State>(&text) else { continue };
+        let Some(repo) = state.repo.as_deref().filter(|_| state.via_stars) else { continue };
+        if keep.contains(&repo.to_lowercase()) {
+            continue;
+        }
+        if dry_run {
+            info!("{repo}: no longer starred; would remove {}", dir.display());
+            summary.unstarred += 1;
+            continue;
+        }
+        let recorded = state.releases.values().flat_map(|r| r.dirs.iter()).filter(|d| is_safe_relative(d));
+        for d in recorded {
+            if let Err(e) = fs::remove_dir_all(dir.join(d)).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) {
+                warn!("{repo}: cannot remove {}: {e}", dir.join(d).display());
+            }
+        }
+        if let Some(r) = state.readme.as_deref().filter(|r| is_plain_file_name(r)) {
+            let _ = fs::remove_file(dir.join(r));
+        }
+        let _ = fs::remove_file(dir.join(STATE_FILE));
+        match fs::remove_dir(&dir) {
+            Ok(()) => info!("{repo}: no longer starred; removed {}", dir.display()),
+            Err(_) => info!("{repo}: no longer starred; removed its archived files from {} (kept files you added)", dir.display()),
+        }
+        summary.unstarred += 1;
+    }
 }
 
 fn wanted_asset(name: &str, opts: &Effective) -> bool {
@@ -385,6 +432,41 @@ mod tests {
         opts.include_prereleases = true;
         let (picked, fell_back) = select_releases(mixed(), &opts, 2);
         assert_eq!((tags(&picked), fell_back), (vec!["nightly-2", "v1.2"], false));
+    }
+
+    #[test]
+    fn removes_only_unstarred_starred_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path();
+        let project = |folder: &str, repo: &str, via_stars: bool| {
+            let p = site.join(folder);
+            fs::create_dir_all(p.join("v1")).unwrap();
+            fs::write(p.join("v1/app.zip"), "x").unwrap();
+            fs::write(p.join("README.md"), "readme").unwrap();
+            let state = format!(
+                r#"{{"repo": "{repo}", "readme": "README.md", "via_stars": {via_stars}, "releases": {{"v1": {{"published_at": "2026", "dirs": ["v1"]}}}}}}"#
+            );
+            fs::write(p.join(STATE_FILE), state).unwrap();
+        };
+        project("gone", "a/gone", true); // unstarred: deleted
+        project("mine", "a/mine", true); // unstarred, but has a file you added
+        fs::write(site.join("mine/notes.txt"), "keep me").unwrap();
+        project("still", "a/still", true); // still starred
+        project("listed", "a/listed", false); // from [[repo]]: never touched
+        let keep: HashSet<String> = ["a/still".to_string()].into();
+
+        let mut s = Summary::default();
+        remove_unstarred(site, &keep, true, &mut s); // dry run changes nothing
+        assert_eq!(s.unstarred, 2);
+        assert!(site.join("gone/v1/app.zip").is_file());
+
+        let mut s = Summary::default();
+        remove_unstarred(site, &keep, false, &mut s);
+        assert_eq!(s.unstarred, 2);
+        assert!(!site.join("gone").exists());
+        assert!(site.join("mine/notes.txt").is_file() && !site.join("mine/v1").exists() && !site.join("mine/README.md").exists());
+        assert!(site.join("still/v1/app.zip").is_file());
+        assert!(site.join("listed/v1/app.zip").is_file());
     }
 
     #[test]

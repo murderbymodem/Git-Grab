@@ -52,8 +52,17 @@ impl<'a> Sites<'a> {
     }
 }
 
-/// Returns the repos to check and how many sources (sites, accounts, stars) failed.
-pub fn build(cfg: &Config, cache: Option<PathBuf>) -> (Vec<Target>, usize) {
+pub struct Built {
+    pub targets: Vec<Target>,
+    /// How many sources (sites, accounts, the star list) failed.
+    pub failures: usize,
+    /// Every currently starred repo (lowercase "owner/name", before `ignore`
+    /// and other filters), if the star list was fetched successfully.
+    pub starred: Option<HashSet<String>>,
+}
+
+/// Builds the repos to check.
+pub fn build(cfg: &Config, cache: Option<PathBuf>) -> Built {
     let mut sites = Sites::new(cfg, cache);
     let mut list = List::default();
     let mut failures = 0;
@@ -84,15 +93,21 @@ pub fn build(cfg: &Config, cache: Option<PathBuf>) -> (Vec<Target>, usize) {
         }
     }
 
+    let mut starred = None;
     if let Some(s) = cfg.starred_enabled() {
         let gh = Location { base: "https://github.com".into(), host: forge::GITHUB_HOST.into(), path: String::new() };
         if let Some(forge) = sites.get(&gh) {
-            let starred = forge.github().map(|c| c.starred(s.user.as_deref()));
-            match starred {
+            let listing = forge.github().map(|c| c.starred(s.user.as_deref()));
+            match listing {
                 Some(Ok(repos)) => {
+                    starred = Some(repos.iter().map(|r| r.full_name.to_lowercase()).collect());
                     let repos = repos.into_iter().map(|r| Listed { path: r.full_name, fork: r.fork, archived: r.archived }).collect();
                     let opts = cfg.effective(&s.options);
+                    let before = list.targets.len();
                     let n = list.add_listed(cfg, &gh, &forge, repos, &s.ignore, s.include_forks, s.include_archived, &opts);
+                    for t in &mut list.targets[before..] {
+                        t.via_stars = true;
+                    }
                     info!("{n} repo(s) from stars");
                 }
                 Some(Err(e)) => {
@@ -104,7 +119,7 @@ pub fn build(cfg: &Config, cache: Option<PathBuf>) -> (Vec<Target>, usize) {
         }
     }
     info!("{} repo(s) to check ({from_config} listed in the config)", list.targets.len());
-    (list.targets, failures + sites.failures)
+    Built { targets: list.targets, failures: failures + sites.failures, starred }
 }
 
 #[derive(Default)]
@@ -121,7 +136,7 @@ impl List {
             return false; // listed explicitly, or found twice
         }
         self.folders.entry(source.to_lowercase()).or_default().insert(folder.to_lowercase());
-        self.targets.push(Target { repo: id, path, source, folder, opts, forge });
+        self.targets.push(Target { repo: id, path, source, folder, opts, forge, via_stars: false });
         true
     }
 

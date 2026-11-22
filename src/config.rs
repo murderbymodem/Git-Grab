@@ -116,6 +116,9 @@ pub struct StarredConfig {
     pub include_forks: bool,
     #[serde(default = "yes")]
     pub include_archived: bool,
+    /// Delete a starred project's archived files once it's unstarred.
+    #[serde(default)]
+    pub remove_unstarred: bool,
     /// Options for starred repos, overriding the global ones.
     #[serde(flatten)]
     pub options: RepoOptions,
@@ -150,7 +153,7 @@ const TOP_KEYS: &[&str] = &[
     "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo", "account", "site",
 ];
 const REPO_KEYS: &[&str] = &["repo", "folder"];
-const STARRED_KEYS: &[&str] = &["enabled", "user", "ignore", "include_forks", "include_archived"];
+const STARRED_KEYS: &[&str] = &["enabled", "user", "ignore", "include_forks", "include_archived", "remove_unstarred"];
 const ACCOUNT_KEYS: &[&str] = &["url", "ignore", "include_forks", "include_archived"];
 
 /// Rejects misspelled keys, which serde would otherwise silently ignore.

@@ -306,9 +306,10 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
     }
     let mut s = archive::Summary::default();
     // A site, account or star list that fails only skips its own repos.
-    let (targets, failures) = targets::build(cfg, cache_dir());
-    s.failed += failures;
-    archive::run(&cfg.archive_root, &cfg.mirrors, &targets, dry_run, &mut s);
+    let built = targets::build(cfg, cache_dir());
+    s.failed += built.failures;
+    archive::run(&cfg.archive_root, &cfg.mirrors, &built.targets, dry_run, &mut s);
+    remove_unstarred(cfg, &built, dry_run, &mut s);
     info!(
         "done: {} {}, {} already archived, {} failed, {} old release(s) pruned, {} transferred",
         s.downloaded,
@@ -318,6 +319,10 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
         s.pruned,
         archive::human(s.bytes)
     );
+    if s.unstarred > 0 {
+        let verb = if dry_run { "would be removed" } else { "removed" };
+        info!("{} unstarred project(s) {verb}", s.unstarred);
+    }
     if !cfg.mirrors.is_empty() {
         info!(
             "mirrors: {} file(s) {}, {} old folder(s) removed, {} copied",
@@ -328,6 +333,31 @@ fn run_once(cfg: &Config, dry_run: bool) -> Result<bool> {
         );
     }
     Ok(s.failed > 0)
+}
+
+/// With `[starred] remove_unstarred`, deletes the folders of projects that were
+/// archived for a star that's gone, in the archive and every reachable mirror.
+/// Skipped unless the star list was fetched this run and isn't empty, so an
+/// outage or a bad login can't empty the archive.
+fn remove_unstarred(cfg: &Config, built: &targets::Built, dry_run: bool, s: &mut archive::Summary) {
+    if !cfg.starred_enabled().is_some_and(|st| st.remove_unstarred) {
+        return;
+    }
+    let Some(starred) = &built.starred else {
+        warn!("not removing unstarred projects this time: the star list couldn't be read");
+        return;
+    };
+    if starred.is_empty() {
+        warn!("not removing unstarred projects: GitHub returned no stars at all (unstar-everything is ignored to be safe)");
+        return;
+    }
+    // Anything still starred, or archived for another reason, stays.
+    let mut keep = starred.clone();
+    keep.extend(built.targets.iter().map(|t| t.repo.to_lowercase()));
+    let site = cfg.source_folder(forge::GITHUB_HOST);
+    for root in std::iter::once(&cfg.archive_root).chain(cfg.mirrors.iter().filter(|m| m.is_dir())) {
+        archive::remove_unstarred(&root.join(&site), &keep, dry_run, s);
+    }
 }
 
 /// Whether anything in the config is on github.com.

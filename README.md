@@ -238,12 +238,23 @@ enabled = true
 ignore = ["someorg/*"]         # owner/name wildcards to skip
 include_forks = true
 include_archived = true
+remove_unstarred = false       # true: delete a repo's archived files once you unstar it
 releases = 1                   # settings for starred repos only
 ```
 
 The list is fetched on every run, so a newly starred repo is picked up on the
-next check. Unstarring a repo stops new downloads but keeps what's already
-archived. A repo that's both starred and listed under `[[repo]]` uses its
+next check. Unstarring a repo stops new downloads. By default, what's already
+archived is kept.
+
+**`remove_unstarred = true`** deletes an unstarred repo's folder on the next run,
+in the main archive and in every mirror. `run --dry-run` shows what it would
+remove first. To be safe:
+- Only repos archived *because* they were starred are removed. Anything in a
+  `[[repo]]` or `[[account]]` entry stays, even if you also unstar it.
+- Nothing is removed in a run where the star list couldn't be fetched, or came
+  back completely empty.
+- Only what Git-Grab downloaded is deleted: the release folders, README and
+  state file. Files you added yourself stay, and so does the folder holding them. A repo that's both starred and listed under `[[repo]]` uses its
 `[[repo]]` settings.
 
 If two starred repos have the same name (`alice/tool` and `bob/tool`), the

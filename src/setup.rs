@@ -168,6 +168,8 @@ fn first_time(config_path: &Path) -> Result<()> {
             (!u.is_empty()).then_some(Some(u))
         }
     };
+    let remove_unstarred = starred_user.is_some()
+        && yes_no("When you unstar a repo on GitHub, delete its archived files too?", false);
     println!("Add specific projects, one per line: owner/name for GitHub (e.g. BurntSushi/ripgrep),");
     println!("or paste a link from GitHub, GitLab, Gitea, Forgejo or Codeberg.");
     println!("Press Enter on an empty line when done.");
@@ -223,6 +225,7 @@ fn first_time(config_path: &Path) -> Result<()> {
         archive_root: &archive_root,
         mirrors: &mirrors,
         starred_user: starred_user.as_ref().map(|u| u.as_deref()),
+        remove_unstarred,
         repos: &repos,
         accounts: &accounts,
         releases,
@@ -310,6 +313,8 @@ pub struct Answers<'a> {
     pub mirrors: &'a [String],
     /// None = starred off; Some(None) = the logged-in account; Some(Some(u)) = user u.
     pub starred_user: Option<Option<&'a str>>,
+    /// Delete archived files of repos that get unstarred.
+    pub remove_unstarred: bool,
     pub repos: &'a [String],
     pub accounts: &'a [String],
     pub releases: usize,
@@ -358,6 +363,10 @@ pub fn build_config(a: &Answers) -> String {
         Some(None) => t.push_str("enabled = true   # repos starred by the logged-in account\n"),
         Some(Some(u)) => t.push_str(&format!("enabled = true\nuser = {}\n", q(u))),
     }
+    t.push_str(&format!(
+        "remove_unstarred = {}   # delete a repo's archived files once you unstar it\n",
+        a.remove_unstarred
+    ));
     t.push_str("# ignore = [\"someorg/*\"]   # starred repos to skip\n");
     for r in a.repos {
         t.push_str(&format!("\n[[repo]]\nrepo = {}\n", q(r)));
@@ -423,6 +432,7 @@ mod tests {
             archive_root: r"\\nas\eric's share",
             mirrors: &[r"D:\Archive".to_string()],
             starred_user: Some(None),
+            remove_unstarred: true,
             repos: &repos,
             accounts: &["https://git.magicbean.dev/MagicBeanDev".to_string()],
             releases: 2,
@@ -433,6 +443,7 @@ mod tests {
         assert_eq!(cfg.mirrors, [PathBuf::from(r"D:\Archive")]);
         assert_eq!(cfg.defaults.keep_versions, Some(2));
         assert!(cfg.starred_enabled().unwrap().user.is_none());
+        assert!(cfg.starred_enabled().unwrap().remove_unstarred);
         assert_eq!(cfg.repos[0].repo, "BurntSushi/ripgrep");
         assert_eq!(cfg.accounts[0].url, "https://git.magicbean.dev/MagicBeanDev");
 
@@ -440,6 +451,7 @@ mod tests {
             archive_root: "/mnt/x",
             mirrors: &[],
             starred_user: Some(Some("someone")),
+            remove_unstarred: false,
             repos: &[],
             accounts: &[],
             releases: 1,

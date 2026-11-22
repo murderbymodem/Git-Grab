@@ -86,6 +86,9 @@ enabled = false
 # ignore = ["someorg/*", "owner/huge-repo"]
 # include_forks = true
 # include_archived = true
+# Delete a repo's archived files (here and in mirrors) once you unstar it.
+# Repos also listed under [[repo]] or [[account]] are never removed.
+# remove_unstarred = false
 # Settings for starred repos only (override the defaults above):
 # releases = 1
 # exclude = ["*.tar.gz"]
