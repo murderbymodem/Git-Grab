@@ -40,8 +40,11 @@ interval_minutes = 360
 
 # How many of the newest releases to archive.
 releases = 1
-# Include prereleases (betas, release candidates).
+# Include prereleases (betas, release candidates, nightlies).
 include_prereleases = false
+# With prereleases off: for a project that only publishes prereleases (e.g. just
+# nightly builds), archive its newest prereleases instead of nothing.
+prereleases_if_no_release = true
 # Also save GitHub's auto-generated source zip (<Project>-<tag>-source.zip).
 include_source = false
 # Delete archived releases beyond the newest N. Leave out to keep everything.

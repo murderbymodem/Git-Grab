@@ -149,12 +149,10 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
     // Never download more than retention would keep, or we'd fetch and delete
     // the same release on every run.
     let wanted = opts.keep_versions.map_or(opts.releases, |k| opts.releases.min(k));
-    let releases: Vec<Release> = client
-        .releases(&t.path, wanted)?
-        .into_iter()
-        .filter(|r| !r.draft && (opts.include_prereleases || !r.prerelease))
-        .take(wanted)
-        .collect();
+    let (releases, fell_back) = select_releases(client.releases(&t.path, wanted)?, opts, wanted);
+    if fell_back {
+        info!("{}: has only prereleases, so archiving its newest prerelease(s)", rc.repo);
+    }
     if releases.is_empty() {
         log::debug!("{}: no matching releases", rc.repo);
         return Ok(());
@@ -211,6 +209,18 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
         state.save(&project_dir).context("cannot save state file")?;
     }
     Ok(())
+}
+
+/// Picks the releases to archive, newest first. Drafts are never archived.
+/// Prereleases only if they're turned on, or if the project has nothing else
+/// (`prereleases_if_no_release`); the second value says whether that happened.
+fn select_releases(all: Vec<Release>, opts: &Effective, wanted: usize) -> (Vec<Release>, bool) {
+    let published: Vec<Release> = all.into_iter().filter(|r| !r.draft).collect();
+    let has_regular = published.iter().any(|r| !r.prerelease);
+    let fallback = !opts.include_prereleases && opts.prereleases_if_no_release && !has_regular && !published.is_empty();
+    let use_pre = opts.include_prereleases || fallback;
+    let picked = published.into_iter().filter(|r| use_pre || !r.prerelease).take(wanted).collect();
+    (picked, fallback)
 }
 
 fn wanted_asset(name: &str, opts: &Effective) -> bool {
@@ -339,6 +349,42 @@ mod tests {
         assert!(!is_safe_relative("../x"));
         assert!(!is_safe_relative("/etc/x"));
         assert!(!is_safe_relative(STATE_FILE));
+    }
+
+    fn rel(tag: &str, prerelease: bool, draft: bool) -> Release {
+        Release {
+            tag_name: tag.into(),
+            draft,
+            prerelease,
+            published_at: None,
+            created_at: None,
+            assets: vec![],
+            source_zip: None,
+        }
+    }
+
+    fn tags(v: &[Release]) -> Vec<&str> {
+        v.iter().map(|r| r.tag_name.as_str()).collect()
+    }
+
+    #[test]
+    fn release_selection() {
+        let cfg = crate::config::Config::parse("archive_root = '/x'").unwrap();
+        let mut opts = cfg.effective(&Default::default());
+        // Regular releases win over newer nightlies (like LongshotLauncher).
+        let mixed = || vec![rel("nightly-2", true, false), rel("v1.2", false, false), rel("nightly-1", true, false)];
+        assert_eq!(tags(&select_releases(mixed(), &opts, 1).0), ["v1.2"]);
+        // Only nightlies (like Beanstalk): take the newest instead of nothing.
+        let only_pre = || vec![rel("draft", false, true), rel("nightly-9", true, false), rel("nightly-8", true, false)];
+        let (picked, fell_back) = select_releases(only_pre(), &opts, 1);
+        assert_eq!((tags(&picked), fell_back), (vec!["nightly-9"], true));
+        // ... unless that's turned off.
+        opts.prereleases_if_no_release = false;
+        assert!(select_releases(only_pre(), &opts, 1).0.is_empty());
+        // include_prereleases takes everything but drafts, newest first.
+        opts.include_prereleases = true;
+        let (picked, fell_back) = select_releases(mixed(), &opts, 2);
+        assert_eq!((tags(&picked), fell_back), (vec!["nightly-2", "v1.2"], false));
     }
 
     #[test]

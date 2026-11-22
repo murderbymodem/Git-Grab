@@ -76,7 +76,10 @@ pub struct RepoOptions {
     /// How many of the newest releases to archive.
     pub releases: Option<usize>,
     pub include_prereleases: Option<bool>,
-    /// Also archive GitHub's auto-generated source zip into a "Source" folder.
+    /// When prereleases are off and a project has only prereleases (e.g. just
+    /// nightlies), archive its newest prereleases instead of nothing.
+    pub prereleases_if_no_release: Option<bool>,
+    /// Also archive the site's auto-generated source zip.
     pub include_source: Option<bool>,
     /// Delete archived releases older than the newest N (only ones this tool downloaded).
     pub keep_versions: Option<usize>,
@@ -123,6 +126,7 @@ pub struct StarredConfig {
 pub struct Effective {
     pub releases: usize,
     pub include_prereleases: bool,
+    pub prereleases_if_no_release: bool,
     pub include_source: bool,
     pub keep_versions: Option<usize>,
     pub include: Vec<String>,
@@ -141,7 +145,7 @@ fn yes() -> bool {
 }
 
 const OPTION_KEYS: &[&str] =
-    &["releases", "include_prereleases", "include_source", "keep_versions", "include", "exclude", "save_readme"];
+    &["releases", "include_prereleases", "prereleases_if_no_release", "include_source", "keep_versions", "include", "exclude", "save_readme"];
 const TOP_KEYS: &[&str] = &[
     "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo", "account", "site",
 ];
@@ -312,6 +316,7 @@ impl Config {
         Effective {
             releases: o.releases.or(d.releases).unwrap_or(1),
             include_prereleases: o.include_prereleases.or(d.include_prereleases).unwrap_or(false),
+            prereleases_if_no_release: o.prereleases_if_no_release.or(d.prereleases_if_no_release).unwrap_or(true),
             include_source: o.include_source.or(d.include_source).unwrap_or(false),
             keep_versions: o.keep_versions.or(d.keep_versions),
             include: pick(&o.include, &d.include),

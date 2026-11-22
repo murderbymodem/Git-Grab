@@ -60,6 +60,10 @@ It's a single program for Windows and Linux.
   `include`/`exclude` wildcards skip files you don't want, and you can choose how
   many releases to keep, whether to include prereleases, and whether to save
   source zips, globally or per repo.
+- **Prereleases when there's nothing else.** Prereleases (betas, nightlies) are
+  skipped by default. A project that only publishes prereleases gets its newest
+  ones archived instead of nothing (`prereleases_if_no_release`, on by default).
+  A project with no releases at all gets no folder.
 - **Mirrors.** Keep the archive in two (or more) places at once, such as a
   local drive plus a network share. Files are downloaded once and copied to
   each mirror. A mirror that's offline catches up on the next run.

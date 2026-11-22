@@ -1,6 +1,6 @@
 [package]
 name = "git-grab"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Git-Grab: watches projects on GitHub, GitLab, Gitea and Forgejo for new releases and archives every file into per-site, per-project, per-version folders"
 license = "GPL-3.0-only"
