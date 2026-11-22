@@ -3,26 +3,34 @@
 Checks projects on GitHub, GitLab, Gitea, Forgejo and Codeberg for new
 releases, including everything you've starred on GitHub or every project of a
 user or organization, and archives every file from each release on a network
-share, one folder per project and one per version:
+share: one folder per site, then one per project and one per version.
 
 ```
 \\nas\software\
-├── ripgrep\
-│   ├── README.md
-│   ├── 14.1.0\
-│   │   ├── ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
-│   │   ├── ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
-│   │   ├── ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
-│   │   ├── ripgrep-14.1.0-aarch64-apple-darwin.tar.gz
-│   │   └── ripgrep_14.1.0-1_amd64.deb
-│   └── 14.0.3\
-│       └── ...
-└── KeePassXC\
-    ├── README.md
-    └── 2.7.9\
-        ├── KeePassXC-2.7.9-Win64.msi
-        └── KeePassXC-2.7.9-x86_64.AppImage
+├── GitHub\
+│   ├── ripgrep\
+│   │   ├── README.md
+│   │   ├── 14.1.0\
+│   │   │   ├── ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+│   │   │   ├── ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz
+│   │   │   ├── ripgrep-14.1.0-aarch64-apple-darwin.tar.gz
+│   │   │   └── ripgrep_14.1.0-1_amd64.deb
+│   │   └── 14.0.3\
+│   └── KeePassXC\
+│       └── 2.7.9\
+├── GitLab\                  (gitlab.com)
+│   └── inkscape\1.4\
+├── Codeberg\                (codeberg.org)
+│   └── forgejo\...
+└── git.magicbean.dev\       (each Gitea/Forgejo or self-hosted GitLab site)
+    └── tool\
+        ├── README.md
+        └── v1.0\
 ```
+
+The site folders are `GitHub`, `GitLab` (gitlab.com) and `Codeberg`. Any other
+site uses its host name, such as `git.magicbean.dev`. To use a different name,
+set `folder` in a `[[site]]` entry, for example `folder = "MagicBean"`.
 
 Version folders use the release's tag name exactly as the project wrote it
 (`v1.2.0`, `1.2.0`, `release-2024.05`, …), with characters Windows doesn't allow
@@ -124,7 +132,7 @@ mirrors = ['\\nas\software']         # gets a copy of everything
 ```
 
 Each run copies new or changed files from `archive_root` to every mirror, using
-the same `<Project>\<version>\` layout. Copies are written to a temporary file
+the same `<Site>\<Project>\<version>\` layout. Copies are written to a temporary file
 and renamed when complete. When `keep_versions` removes an old release from the
 main archive, it's removed from the mirrors too. Like everywhere else, only
 folders this program created are ever deleted. Files you put in a mirror
@@ -194,6 +202,7 @@ identified, or you'd rather not wait for the check, say what it is:
 [[site]]
 url = "https://git.magicbean.dev"
 type = "forgejo"        # "github" (Enterprise), "gitlab", "gitea" or "forgejo"
+folder = "MagicBean"    # optional: the site's folder in the archive (default: git.magicbean.dev)
 ```
 
 **Logging in** isn't needed for public projects. For private ones, run
@@ -314,6 +323,15 @@ repos or files failed (the rest continued), `2` the run couldn't start.
 Set `RUST_LOG=debug` for detailed logs.
 
 Every option is explained in [`config.example.toml`](config.example.toml).
+
+## Upgrading from 0.9 or earlier: site folders
+
+Earlier versions put projects straight into the archive folder
+(`\\nas\software\ripgrep\`). On its first run, 0.10 moves each one into its site's
+folder (`\\nas\software\GitHub\ripgrep\`), in the main archive and in every mirror,
+so nothing is downloaded or copied again. A folder is only moved if its state
+file says it belongs to that project. Folders the program didn't create, and
+projects no longer in your config, are left where they are.
 
 ## Renamed from github-release-archiver
 

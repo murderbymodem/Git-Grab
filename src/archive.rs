@@ -66,7 +66,9 @@ pub struct Target {
     /// The repo's path on its site.
     pub path: String,
     pub forge: std::rc::Rc<Forge>,
-    /// Project folder name (already sanitized).
+    /// The site's folder in the archive, e.g. "GitHub" or "git.magicbean.dev".
+    pub source: String,
+    /// Project folder name inside it (already sanitized).
     pub folder: String,
     pub opts: Effective,
 }
@@ -129,6 +131,11 @@ pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], dry_run: bool, 
             ok
         })
         .collect();
+    if !dry_run {
+        for r in std::iter::once(root).chain(mirrors.iter().map(|m| m.as_path())) {
+            move_into_source_folders(r, targets);
+        }
+    }
     for t in targets {
         if let Err(e) = archive_repo(root, t, dry_run, summary) {
             warn!("{}: {e:#}", t.repo);
@@ -136,7 +143,8 @@ pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], dry_run: bool, 
         }
         // Mirror even if checking GitHub failed: what's archived is still good.
         for m in &mirrors {
-            if let Err(e) = crate::mirror::sync_project(&root.join(&t.folder), &m.join(&t.folder), dry_run, &mut summary.mirror) {
+            let rel = Path::new(&t.source).join(&t.folder);
+            if let Err(e) = crate::mirror::sync_project(&root.join(&rel), &m.join(&rel), dry_run, &mut summary.mirror) {
                 warn!("{}: copying to mirror {} failed: {e:#}", t.repo, m.display());
             }
         }
@@ -148,7 +156,7 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
     let rc = t; // keeps the log lines below short: rc.repo
     let opts = &t.opts;
     let project = &t.folder;
-    let project_dir = root.join(project);
+    let project_dir = root.join(&t.source).join(project);
 
     // Never download more than retention would keep, or we'd fetch and delete
     // the same release on every run.
@@ -223,6 +231,42 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
 fn wanted_asset(name: &str, opts: &Effective) -> bool {
     (opts.include.is_empty() || opts.include.iter().any(|p| glob_match(p, name)))
         && !opts.exclude.iter().any(|p| glob_match(p, name))
+}
+
+/// Versions before 0.10 kept projects directly in the archive folder
+/// (<root>/<Project>/). Moves each one into its site's folder
+/// (<root>/<Source>/<Project>/), but only when its state file says it belongs
+/// to that repo, so nothing is downloaded again and nothing else is touched.
+fn move_into_source_folders(root: &Path, targets: &[Target]) {
+    let sources: BTreeSet<String> = targets.iter().map(|t| t.source.to_lowercase()).collect();
+    let pending: Vec<&Target> = targets
+        .iter()
+        .filter(|t| {
+            let old = root.join(&t.folder);
+            !root.join(&t.source).join(&t.folder).exists()
+                && old.is_dir()
+                && folder_owner(&old).is_some_and(|o| o.eq_ignore_ascii_case(&t.repo))
+        })
+        .collect();
+    // A project whose folder has a site's name (a GitHub project called
+    // "GitLab") must move first, before that name becomes a site folder.
+    let (first, rest): (Vec<&Target>, Vec<&Target>) = pending.into_iter().partition(|t| sources.contains(&t.folder.to_lowercase()));
+    for t in first.into_iter().chain(rest) {
+        let old = root.join(&t.folder);
+        let new = root.join(&t.source).join(&t.folder);
+        let result = (|| -> std::io::Result<()> {
+            // Via a temporary name, in case the project folder is about to
+            // become (or contain) its own site folder.
+            let tmp = root.join(format!(".github-grab-moving-{}", sanitize(&t.folder)));
+            fs::rename(&old, &tmp)?;
+            fs::create_dir_all(root.join(&t.source))?;
+            fs::rename(&tmp, &new)
+        })();
+        match result {
+            Ok(()) => info!("{}: moved {} to {}", t.repo, old.display(), new.display()),
+            Err(e) => warn!("{}: couldn't move {} to {}: {e}", t.repo, old.display(), new.display()),
+        }
+    }
 }
 
 /// Versions before 0.5 sorted files into <OS>/<tag>/ (plus Source/<tag>/).
@@ -421,6 +465,48 @@ mod tests {
         }
         assert!(!p.join("Windows").exists() && !p.join("Linux").exists() && !p.join("Source").exists());
         assert_eq!(state.releases["v1"].dirs.iter().collect::<Vec<_>>(), ["v1"]);
+    }
+
+    fn target(repo: &str, source: &str, folder: &str) -> Target {
+        let forge = Forge::new("https://github.com", "github.com", crate::forge::Kind::GitHub, None, None, "https://api.github.com").unwrap();
+        let cfg = crate::config::Config::parse("archive_root = '/x'").unwrap();
+        Target {
+            repo: repo.into(),
+            path: repo.into(),
+            source: source.into(),
+            folder: folder.into(),
+            opts: cfg.effective(&Default::default()),
+            forge: std::rc::Rc::new(forge),
+        }
+    }
+
+    #[test]
+    fn moves_flat_projects_into_site_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = |folder: &str, repo: &str| {
+            fs::create_dir_all(root.join(folder).join("v1")).unwrap();
+            fs::write(root.join(folder).join("v1/file"), "x").unwrap();
+            fs::write(root.join(folder).join(STATE_FILE), format!(r#"{{"repo": "{repo}", "releases": {{}}}}"#)).unwrap();
+        };
+        project("tool", "a/tool");
+        project("GitLab", "a/GitLab"); // a GitHub project that happens to be called "GitLab"
+        project("proj", "gitlab.com/g/proj");
+        project("other", "x/other"); // not in the targets: left alone
+        let targets = [
+            target("a/tool", "GitHub", "tool"),
+            target("a/GitLab", "GitHub", "GitLab"),
+            target("gitlab.com/g/proj", "GitLab", "proj"),
+        ];
+        move_into_source_folders(root, &targets);
+        assert!(root.join("GitHub/tool/v1/file").is_file());
+        assert!(root.join("GitHub/GitLab/v1/file").is_file());
+        assert!(root.join("GitLab/proj/v1/file").is_file());
+        assert!(!root.join("tool").exists() && !root.join("proj").exists());
+        assert!(root.join("other/v1/file").is_file());
+        // Running again changes nothing.
+        move_into_source_folders(root, &targets);
+        assert!(root.join("GitHub/tool/v1/file").is_file());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 Rust CLI (Windows + Linux) that archives release assets from GitHub, GitLab and
 Gitea/Forgejo into
-`<archive_root>/<Project>/<tag>/<file>` (all files of each release; no OS sorting).
+`<archive_root>/<Site>/<Project>/<tag>/<file>` (all files of each release; no OS sorting).
 
 ## Commits
 

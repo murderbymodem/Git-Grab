@@ -69,6 +69,8 @@ pub struct SiteConfig {
     pub kind: Option<String>,
     /// Token for this site (or use `login --site`).
     pub token: Option<String>,
+    /// Name of this site's folder in the archive (default: its host name).
+    pub folder: Option<String>,
 }
 
 /// Options that can be set globally and overridden per repo (or for starred repos).
@@ -257,7 +259,8 @@ impl Config {
         for r in &self.repos {
             crate::forge::Location::parse(&r.repo, 2).with_context(|| format!("[[repo]] {}", r.repo))?;
             check_counts(&r.repo, &r.options)?;
-            let folder = self.project_folder(r).to_lowercase();
+            let source = crate::forge::Location::parse(&r.repo, 2).map(|l| self.source_folder(&l.host)).unwrap_or_default();
+            let folder = format!("{source}/{}", self.project_folder(r)).to_lowercase();
             if !folders.insert(folder.clone()) {
                 bail!("two repos use the project folder \"{folder}\"; set `folder` on one of them");
             }
@@ -288,6 +291,19 @@ impl Config {
             Err(_) => r.repo.clone(),
         });
         crate::util::sanitize(&name)
+    }
+
+    /// The folder a site's projects go in: <archive_root>/<this>/<Project>/.
+    pub fn source_folder(&self, host: &str) -> String {
+        if let Some(f) = self.site(host).and_then(|s| s.folder.as_deref()).filter(|f| !f.trim().is_empty()) {
+            return crate::util::sanitize(f.trim());
+        }
+        crate::util::sanitize(match host {
+            "github.com" => "GitHub",
+            "gitlab.com" => "GitLab",
+            "codeberg.org" => "Codeberg",
+            other => other,
+        })
     }
 
     /// The [[site]] entry for a host, if any.
@@ -364,6 +380,21 @@ mod tests {
         assert_eq!(cfg.mirrors, [PathBuf::from(r"\\nas\software")]);
         assert!(Config::parse("archive_root = '/a'\nmirrors = ['/a/']").is_err());
         assert!(Config::parse("archive_root = '/a'\nmirrors = ['/b', '/B']").is_err());
+    }
+
+    #[test]
+    fn source_folders() {
+        let cfg = Config::parse(
+            "archive_root = '/a'\n[[site]]\nurl = 'https://git.magicbean.dev'\nfolder = 'MagicBean'\n\
+             [[repo]]\nrepo = 'a/tool'\n[[repo]]\nrepo = 'https://git.magicbean.dev/x/tool'",
+        )
+        .unwrap();
+        assert_eq!(cfg.source_folder("github.com"), "GitHub");
+        assert_eq!(cfg.source_folder("gitlab.com"), "GitLab");
+        assert_eq!(cfg.source_folder("git.magicbean.dev"), "MagicBean");
+        assert_eq!(cfg.source_folder("git.example.org:3000"), "git.example.org_3000");
+        // Same project name on two sites is fine; twice on one site isn't.
+        assert!(Config::parse("archive_root = '/a'\n[[repo]]\nrepo = 'a/tool'\n[[repo]]\nrepo = 'b/tool'").is_err());
     }
 
     #[test]

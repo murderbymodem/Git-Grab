@@ -62,8 +62,9 @@ pub fn build(cfg: &Config, cache: Option<PathBuf>) -> (Vec<Target>, usize) {
         let Ok(loc) = Location::parse(&r.repo, 2) else { continue }; // validated when loading
         let Some(forge) = sites.get(&loc) else { continue };
         let path = forge.normalize_repo_path(&loc.path);
+        let source = cfg.source_folder(&loc.host);
         let id = Location { path: path.clone(), ..loc }.id();
-        list.add(id, path, cfg.project_folder(r), cfg.effective(&r.options), forge);
+        list.add(id, path, source, cfg.project_folder(r), cfg.effective(&r.options), forge);
     }
     let from_config = list.targets.len();
 
@@ -109,17 +110,18 @@ pub fn build(cfg: &Config, cache: Option<PathBuf>) -> (Vec<Target>, usize) {
 #[derive(Default)]
 struct List {
     targets: Vec<Target>,
-    folders: HashSet<String>,
+    /// Project folders in use, per site folder (lowercase).
+    folders: HashMap<String, HashSet<String>>,
     ids: HashSet<String>,
 }
 
 impl List {
-    fn add(&mut self, id: String, path: String, folder: String, opts: Effective, forge: Rc<Forge>) -> bool {
+    fn add(&mut self, id: String, path: String, source: String, folder: String, opts: Effective, forge: Rc<Forge>) -> bool {
         if !self.ids.insert(id.to_lowercase()) {
             return false; // listed explicitly, or found twice
         }
-        self.folders.insert(folder.to_lowercase());
-        self.targets.push(Target { repo: id, path, folder, opts, forge });
+        self.folders.entry(source.to_lowercase()).or_default().insert(folder.to_lowercase());
+        self.targets.push(Target { repo: id, path, source, folder, opts, forge });
         true
     }
 
@@ -148,8 +150,11 @@ impl List {
             {
                 continue;
             }
-            let folder = pick_folder(loc.owner(), loc.name(), &id, &self.folders, |f| folder_owner(&cfg.archive_root.join(f)));
-            if self.add(id, loc.path.clone(), folder, opts.clone(), forge.clone()) {
+            let source = cfg.source_folder(&site.host);
+            let used = self.folders.get(&source.to_lowercase()).cloned().unwrap_or_default();
+            let site_dir = cfg.archive_root.join(&source);
+            let folder = pick_folder(loc.owner(), loc.name(), &id, &used, |f| folder_owner(&site_dir.join(f)));
+            if self.add(id, loc.path.clone(), source, folder, opts.clone(), forge.clone()) {
                 added += 1;
             }
         }

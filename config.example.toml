@@ -1,7 +1,9 @@
 # GitHub-Grab configuration
 #
-# Every file from each release is saved as:  <archive_root>/<Project>/<tag>/<file>
-# e.g.  \\nas\software\ripgrep\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+# Every file from each release is saved as:  <archive_root>/<Site>/<Project>/<tag>/<file>
+# e.g.  \\nas\software\GitHub\ripgrep\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
+# Site folders: GitHub, GitLab (gitlab.com), Codeberg, and the host name for any
+# other site (rename it with `folder` in a [[site]] entry, below).
 
 # Where the archive lives. Use single quotes so backslashes are kept as-is.
 #   Windows share:  archive_root = '\\nas\software'
@@ -60,6 +62,7 @@ save_readme = true
 # [[site]]
 # url = "https://git.magicbean.dev"
 # type = "forgejo"      # "github" (Enterprise), "gitlab", "gitea" or "forgejo"
+# folder = "MagicBean"  # the site's folder in the archive (default: its host name)
 # token = "..."
 
 # ---- Whole accounts ----
