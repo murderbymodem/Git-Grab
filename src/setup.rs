@@ -9,9 +9,9 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 pub fn run(config_path: &Path) -> Result<()> {
-    println!("GitHub-Grab {}", env!("CARGO_PKG_VERSION"));
-    println!("Saves every file from each GitHub release to a folder or network share,");
-    println!("as <Project>\\<version>\\<file>.\n");
+    println!("Git-Grab {}", env!("CARGO_PKG_VERSION"));
+    println!("Saves every file from each release on GitHub, GitLab, Gitea or Forgejo to a");
+    println!("folder or network share, as <Site>\\<Project>\\<version>\\<file>.\n");
 
     match paths::location() {
         Place::InsideZip => {
@@ -24,7 +24,7 @@ pub fn run(config_path: &Path) -> Result<()> {
         Place::Downloads => {
             println!("This program is in your Downloads folder. Its settings are saved next to it,");
             println!("and the hourly check runs it from where it is, so it's best to move the whole");
-            println!("folder somewhere permanent first, for example C:\\Tools\\GitHub-Grab,");
+            println!("folder somewhere permanent first, for example C:\\Tools\\Git-Grab,");
             println!("then start it from there.");
             if !yes_no("Continue from the Downloads folder anyway?", false) {
                 return Ok(());
@@ -33,113 +33,41 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
         Place::Fine => {}
     }
-    if !paths::is_portable() {
-        println!("This program's folder can't be written to, so settings are kept in");
-        println!("{}\n", paths::data_dir().display());
+    // Everything is kept next to the config, so that folder must be writable.
+    let dir = paths::data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    if !paths::is_writable(&dir) {
+        println!("Git-Grab keeps its settings in its own folder, but {} can't be", dir.display());
+        println!("written to. Move the program to a folder you can write to, for example");
+        println!("C:\\Tools\\Git-Grab, and start it from there.");
+        return Ok(());
     }
 
-    // Settings from a version before 0.7, which kept them in the user profile.
-    if !config_path.exists() && config_path == paths::config_path() {
-        if let Some(old) = paths::legacy_config() {
-            move_old_settings(&old, config_path)?;
-        }
-    }
     if config_path.exists() {
         return menu(config_path);
     }
     first_time(config_path)
 }
 
-fn move_old_settings(old: &Path, new: &Path) -> Result<()> {
-    println!("Found settings from an earlier version in {}.", old.parent().unwrap_or(old).display());
-    println!("This version keeps its settings in its own folder instead.");
-    if !yes_no(&format!("Move them to {}?", new.parent().unwrap_or(new).display()), true) {
-        println!();
-        return Ok(());
-    }
-    if let Some(dir) = new.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::copy(old, new).with_context(|| format!("cannot copy {} to {}", old.display(), new.display()))?;
-    println!("Settings copied to {}", new.display());
-
-    // The hourly check still points at the old config (and maybe an old copy
-    // of the program), so update it before cleaning up.
-    let mut task_ok = true;
-    if let Some((name, _, _)) = existing_task() {
-        println!("\nThe hourly check needs updating to use this folder.");
-        if let Err(e) = replace_task(new, &name) {
-            println!("Couldn't update the scheduled task: {e:#}");
-            task_ok = false;
-        }
-    }
-    if task_ok {
-        let removed = paths::remove_legacy_files();
-        if !removed.is_empty() {
-            println!("\nRemoved files left by the earlier version:");
-            for p in removed {
-                println!("  {}", p.display());
-            }
-        }
-    } else {
-        println!("The old files are left in place for now. Choose 5 in the menu to update the");
-        println!("hourly check, then they can be removed.");
-    }
-    println!();
-    Ok(())
-}
-
 /// Warns when the scheduled task runs a different copy of the program or
 /// config (e.g. after the folder was moved), and offers to fix it.
 fn check_task_location(config_path: &Path) {
-    let Some((name, command, args)) = existing_task() else { return };
+    let Some((command, args)) = wintask::task_paths(wintask::DEFAULT_NAME) else { return };
     let exe = std::env::current_exe().ok().and_then(|e| wintask::absolute(&e).ok());
     let cfg = wintask::absolute(config_path).ok();
     let same_exe = exe.is_some_and(|e| e.display().to_string().eq_ignore_ascii_case(&command));
     let same_cfg = cfg.is_some_and(|c| args.to_lowercase().contains(&c.display().to_string().to_lowercase()));
-    let renamed = name != wintask::DEFAULT_NAME;
-    if same_exe && same_cfg && !renamed {
+    if same_exe && same_cfg {
         return;
     }
-    if renamed {
-        println!("The hourly check \"{name}\" is from before the rename to GitHub-Grab.");
-    } else {
-        println!("The hourly check runs {command}");
-        println!("with different settings than this copy of the program (was the folder moved?).");
-    }
+    println!("The hourly check runs {command}");
+    println!("with different settings than this copy of the program (was the folder moved?).");
     if yes_no("Update it to use this copy?", true) {
-        if let Err(e) = replace_task(config_path, &name) {
+        if let Err(e) = schedule(config_path) {
             println!("Couldn't update the scheduled task: {e:#}");
         }
     }
     println!();
-}
-
-/// The scheduled task, under its current or a pre-rename name: (name, program, arguments).
-fn existing_task() -> Option<(String, String, String)> {
-    std::iter::once(wintask::DEFAULT_NAME)
-        .chain(wintask::LEGACY_NAMES.iter().copied())
-        .find_map(|n| wintask::task_paths(n).map(|(c, a)| (n.to_string(), c, a)))
-}
-
-/// Points the scheduled task at this copy of the program, removes a task with
-/// a pre-rename name, then cleans up files the old setup left behind.
-fn replace_task(config_path: &Path, old_name: &str) -> Result<()> {
-    schedule(config_path)?;
-    if old_name != wintask::DEFAULT_NAME {
-        match wintask::uninstall(old_name) {
-            Ok(()) => println!("Removed the old scheduled task \"{old_name}\"."),
-            Err(e) => println!("Couldn't remove the old scheduled task \"{old_name}\": {e:#}"),
-        }
-    }
-    let mut removed = paths::tidy_after_rename();
-    if paths::legacy_config().is_none() {
-        removed.extend(paths::remove_legacy_files()); // e.g. the old copy in %LOCALAPPDATA%\Programs
-    }
-    for p in removed {
-        println!("Removed old file {}", p.display());
-    }
-    Ok(())
 }
 
 /// Shown when a config already exists.
@@ -405,7 +333,7 @@ fn q(s: &str) -> String {
 
 pub fn build_config(a: &Answers) -> String {
     let mut t = String::new();
-    t.push_str("# Created by GitHub-Grab setup. All options: see config.example.toml\n\n");
+    t.push_str("# Created by Git-Grab setup. All options: see config.example.toml\n\n");
     t.push_str(&format!("archive_root = {}\n", q(a.archive_root)));
     if a.mirrors.is_empty() {
         t.push_str("# mirrors = ['\\\\nas\\software']   # extra folders that get a copy of the archive\n\n");

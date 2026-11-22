@@ -10,15 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const STATE_FILE: &str = ".github-grab.json";
-/// The state file's name before the rename to GitHub-Grab; read, then replaced.
-pub const LEGACY_STATE_FILE: &str = ".github-release-archiver.json";
+pub const STATE_FILE: &str = ".git-grab.json";
 
-/// Reads a project's state file under its current or pre-rename name.
 fn read_state_text(project_dir: &Path) -> Option<String> {
-    fs::read_to_string(project_dir.join(STATE_FILE))
-        .or_else(|_| fs::read_to_string(project_dir.join(LEGACY_STATE_FILE)))
-        .ok()
+    fs::read_to_string(project_dir.join(STATE_FILE)).ok()
 }
 
 #[derive(Default, Debug)]
@@ -82,8 +77,7 @@ pub fn folder_owner(project_dir: &Path) -> Option<String> {
 #[derive(Default, Serialize, Deserialize)]
 struct ReleaseState {
     published_at: String,
-    /// Folders relative to the project folder, e.g. "v1.2.0". Versions before
-    /// 0.5 used "<OS>/<tag>"; `migrate_layout` converts those.
+    /// Folders relative to the project folder, e.g. "v1.2.0".
     dirs: BTreeSet<String>,
 }
 
@@ -110,7 +104,6 @@ impl State {
             fs::remove_file(&path)?;
         }
         fs::rename(&tmp, &path)?;
-        let _ = fs::remove_file(project_dir.join(LEGACY_STATE_FILE)); // renamed
         Ok(())
     }
 }
@@ -131,11 +124,6 @@ pub fn run(root: &Path, mirrors: &[PathBuf], targets: &[Target], dry_run: bool, 
             ok
         })
         .collect();
-    if !dry_run {
-        for r in std::iter::once(root).chain(mirrors.iter().map(|m| m.as_path())) {
-            move_into_source_folders(r, targets);
-        }
-    }
     for t in targets {
         if let Err(e) = archive_repo(root, t, dry_run, summary) {
             warn!("{}: {e:#}", t.repo);
@@ -173,9 +161,6 @@ fn archive_repo(root: &Path, t: &Target, dry_run: bool, summary: &mut Summary) -
     }
 
     let mut state = State::load(&project_dir);
-    if !dry_run {
-        migrate_layout(&mut state, &project_dir, &rc.repo);
-    }
     for rel in &releases {
         let tag = sanitize(&rel.tag_name);
         let mut dirs = BTreeSet::new();
@@ -233,86 +218,6 @@ fn wanted_asset(name: &str, opts: &Effective) -> bool {
         && !opts.exclude.iter().any(|p| glob_match(p, name))
 }
 
-/// Versions before 0.10 kept projects directly in the archive folder
-/// (<root>/<Project>/). Moves each one into its site's folder
-/// (<root>/<Source>/<Project>/), but only when its state file says it belongs
-/// to that repo, so nothing is downloaded again and nothing else is touched.
-fn move_into_source_folders(root: &Path, targets: &[Target]) {
-    let sources: BTreeSet<String> = targets.iter().map(|t| t.source.to_lowercase()).collect();
-    let pending: Vec<&Target> = targets
-        .iter()
-        .filter(|t| {
-            let old = root.join(&t.folder);
-            !root.join(&t.source).join(&t.folder).exists()
-                && old.is_dir()
-                && folder_owner(&old).is_some_and(|o| o.eq_ignore_ascii_case(&t.repo))
-        })
-        .collect();
-    // A project whose folder has a site's name (a GitHub project called
-    // "GitLab") must move first, before that name becomes a site folder.
-    let (first, rest): (Vec<&Target>, Vec<&Target>) = pending.into_iter().partition(|t| sources.contains(&t.folder.to_lowercase()));
-    for t in first.into_iter().chain(rest) {
-        let old = root.join(&t.folder);
-        let new = root.join(&t.source).join(&t.folder);
-        let result = (|| -> std::io::Result<()> {
-            // Via a temporary name, in case the project folder is about to
-            // become (or contain) its own site folder.
-            let tmp = root.join(format!(".github-grab-moving-{}", sanitize(&t.folder)));
-            fs::rename(&old, &tmp)?;
-            fs::create_dir_all(root.join(&t.source))?;
-            fs::rename(&tmp, &new)
-        })();
-        match result {
-            Ok(()) => info!("{}: moved {} to {}", t.repo, old.display(), new.display()),
-            Err(e) => warn!("{}: couldn't move {} to {}: {e}", t.repo, old.display(), new.display()),
-        }
-    }
-}
-
-/// Versions before 0.5 sorted files into <OS>/<tag>/ (plus Source/<tag>/).
-/// Moves those recorded folders' files into <tag>/, so nothing is downloaded
-/// twice. Only folders listed in the state file are touched.
-fn migrate_layout(state: &mut State, project_dir: &Path, repo: &str) {
-    for rel in state.releases.values_mut() {
-        let old: Vec<String> = rel.dirs.iter().filter(|d| Path::new(d).components().count() == 2).cloned().collect();
-        for d in old {
-            if !is_safe_relative(&d) {
-                continue;
-            }
-            let src = project_dir.join(&d);
-            let Some(tag) = Path::new(&d).file_name().map(|t| t.to_string_lossy().to_string()) else { continue };
-            let dest = project_dir.join(&tag);
-            if src.is_dir() {
-                if let Err(e) = move_contents(&src, &dest) {
-                    warn!("{repo}: couldn't move {} to {}: {e}", src.display(), dest.display());
-                    continue;
-                }
-                info!("{repo}: moved {} to {}", src.display(), dest.display());
-                let _ = fs::remove_dir(&src); // fails (harmlessly) if a conflicting file was left
-                if let Some(os_dir) = src.parent() {
-                    let _ = fs::remove_dir(os_dir); // only if now empty
-                }
-            }
-            rel.dirs.remove(&d);
-            rel.dirs.insert(tag);
-        }
-    }
-}
-
-fn move_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dest)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let target = dest.join(entry.file_name());
-        if !target.exists() {
-            fs::rename(entry.path(), &target)?;
-        } else if fs::metadata(&target)?.len() == entry.metadata()?.len() {
-            fs::remove_file(entry.path())?; // same file already in place
-        } // else: leave it where it is rather than overwrite anything
-    }
-    Ok(())
-}
-
 /// Writes the repo's README into the project folder when it's new or changed.
 fn save_readme(client: &Forge, repo: &str, path: &str, project_dir: &Path, state: &mut State) -> Result<()> {
     let Some((name, bytes)) = client.readme(path)? else { return Ok(()) };
@@ -341,7 +246,6 @@ fn is_plain_file_name(name: &str) -> bool {
     let mut c = Path::new(name).components();
     matches!((c.next(), c.next()), (Some(std::path::Component::Normal(_)), None))
         && name != STATE_FILE
-        && name != LEGACY_STATE_FILE
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -397,10 +301,6 @@ fn prune(state: &mut State, project_dir: &Path, keep: usize, repo: &str) -> usiz
             match fs::remove_dir_all(&dir) {
                 Ok(()) => {
                     info!("{repo}: removed old release folder {}", dir.display());
-                    // Tidy up a pre-0.5 OS folder left empty.
-                    if let Some(parent) = dir.parent().filter(|p| *p != project_dir) {
-                        let _ = fs::remove_dir(parent);
-                    }
                 }
                 Err(e) => warn!("{repo}: cannot remove {}: {e}", dir.display()),
             }
@@ -410,14 +310,11 @@ fn prune(state: &mut State, project_dir: &Path, keep: usize, repo: &str) -> usiz
     removed
 }
 
-/// Guards against a hand-edited state file pointing outside the project folder.
-/// "<tag>", or "<OS>/<tag>" from versions before 0.5.
-fn is_safe_relative(p: &str) -> bool {
-    let path = Path::new(p);
-    (1..=2).contains(&path.components().count())
-        && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
-        && p != STATE_FILE
-        && p != LEGACY_STATE_FILE
+/// Guards against a hand-edited state file pointing outside the project
+/// folder: a release folder is a single plain name.
+pub fn is_safe_relative(p: &str) -> bool {
+    let mut c = Path::new(p).components();
+    matches!((c.next(), c.next()), (Some(std::path::Component::Normal(_)), None)) && p != STATE_FILE
 }
 
 pub fn human(bytes: u64) -> String {
@@ -438,87 +335,10 @@ mod tests {
     #[test]
     fn safe_relative_paths() {
         assert!(is_safe_relative("v1.0"));
-        assert!(is_safe_relative("Windows/v1.0"));
+        assert!(!is_safe_relative("Windows/v1.0"));
         assert!(!is_safe_relative("../x"));
-        assert!(!is_safe_relative("Windows/../../x"));
         assert!(!is_safe_relative("/etc/x"));
-        assert!(!is_safe_relative("a/b/c"));
         assert!(!is_safe_relative(STATE_FILE));
-    }
-
-    #[test]
-    fn migrates_old_os_folders() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path();
-        for (d, f) in [("Windows/v1", "a.exe"), ("Linux/v1", "a.tar.gz"), ("Source/v1", "src.zip")] {
-            fs::create_dir_all(p.join(d)).unwrap();
-            fs::write(p.join(d).join(f), f).unwrap();
-        }
-        let mut state = State::default();
-        state.releases.insert(
-            "v1".into(),
-            ReleaseState { published_at: "2024".into(), dirs: ["Windows/v1", "Linux/v1", "Source/v1"].map(String::from).into() },
-        );
-        migrate_layout(&mut state, p, "t/t");
-        for f in ["a.exe", "a.tar.gz", "src.zip"] {
-            assert!(p.join("v1").join(f).is_file(), "{f}");
-        }
-        assert!(!p.join("Windows").exists() && !p.join("Linux").exists() && !p.join("Source").exists());
-        assert_eq!(state.releases["v1"].dirs.iter().collect::<Vec<_>>(), ["v1"]);
-    }
-
-    fn target(repo: &str, source: &str, folder: &str) -> Target {
-        let forge = Forge::new("https://github.com", "github.com", crate::forge::Kind::GitHub, None, None, "https://api.github.com").unwrap();
-        let cfg = crate::config::Config::parse("archive_root = '/x'").unwrap();
-        Target {
-            repo: repo.into(),
-            path: repo.into(),
-            source: source.into(),
-            folder: folder.into(),
-            opts: cfg.effective(&Default::default()),
-            forge: std::rc::Rc::new(forge),
-        }
-    }
-
-    #[test]
-    fn moves_flat_projects_into_site_folders() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let project = |folder: &str, repo: &str| {
-            fs::create_dir_all(root.join(folder).join("v1")).unwrap();
-            fs::write(root.join(folder).join("v1/file"), "x").unwrap();
-            fs::write(root.join(folder).join(STATE_FILE), format!(r#"{{"repo": "{repo}", "releases": {{}}}}"#)).unwrap();
-        };
-        project("tool", "a/tool");
-        project("GitLab", "a/GitLab"); // a GitHub project that happens to be called "GitLab"
-        project("proj", "gitlab.com/g/proj");
-        project("other", "x/other"); // not in the targets: left alone
-        let targets = [
-            target("a/tool", "GitHub", "tool"),
-            target("a/GitLab", "GitHub", "GitLab"),
-            target("gitlab.com/g/proj", "GitLab", "proj"),
-        ];
-        move_into_source_folders(root, &targets);
-        assert!(root.join("GitHub/tool/v1/file").is_file());
-        assert!(root.join("GitHub/GitLab/v1/file").is_file());
-        assert!(root.join("GitLab/proj/v1/file").is_file());
-        assert!(!root.join("tool").exists() && !root.join("proj").exists());
-        assert!(root.join("other/v1/file").is_file());
-        // Running again changes nothing.
-        move_into_source_folders(root, &targets);
-        assert!(root.join("GitHub/tool/v1/file").is_file());
-    }
-
-    #[test]
-    fn renames_pre_rename_state_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path();
-        fs::write(p.join(LEGACY_STATE_FILE), r#"{"repo": "a/b", "releases": {}}"#).unwrap();
-        assert_eq!(folder_owner(p).as_deref(), Some("a/b"));
-        let state = State::load(p);
-        state.save(p).unwrap();
-        assert!(p.join(STATE_FILE).is_file() && !p.join(LEGACY_STATE_FILE).exists());
-        assert_eq!(folder_owner(p).as_deref(), Some("a/b"));
     }
 
     #[test]

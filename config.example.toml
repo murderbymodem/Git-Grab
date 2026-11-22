@@ -1,4 +1,4 @@
-# GitHub-Grab configuration
+# Git-Grab configuration
 #
 # Every file from each release is saved as:  <archive_root>/<Site>/<Project>/<tag>/<file>
 # e.g.  \\nas\software\GitHub\ripgrep\14.1.0\ripgrep-14.1.0-x86_64-pc-windows-msvc.zip
@@ -17,9 +17,9 @@ archive_root = '/mnt/software'
 # from mirrors too (only folders this program created).
 # mirrors = ['\\nas\software']
 
-# GitHub login. The easiest way is to run `github-grab login`, which
-# saves a token (Windows Credential Manager on Windows; on Linux a private `token`
-# file next to the program).
+# GitHub login. The easiest way is to run `git-grab login`, which
+# saves a token in the `token` file next to this config (encrypted for your
+# Windows account on Windows; readable only by you on Linux).
 # Logging in raises the API limit from 60 to 5000 requests/hour and lets the tool
 # read your own starred repos. Alternatives: set GITHUB_TOKEN, or put a token here:
 # github_token = "github_pat_..."
@@ -32,7 +32,7 @@ archive_root = '/mnt/software'
 # For GitHub Enterprise Server: api_url = "https://github.example.com/api/v3"
 # api_url = "https://api.github.com"
 
-# Minutes between checks when running `github-grab watch`.
+# Minutes between checks when running `git-grab watch`.
 # (On Windows, `task install` sets up an hourly scheduled task instead.)
 interval_minutes = 360
 
@@ -45,7 +45,7 @@ include_prereleases = false
 # Also save GitHub's auto-generated source zip (<Project>-<tag>-source.zip).
 include_source = false
 # Delete archived releases beyond the newest N. Leave out to keep everything.
-# Only removes folders this tool created (tracked in <Project>/.github-grab.json).
+# Only removes folders this tool created (tracked in <Project>/.git-grab.json).
 # keep_versions = 5
 # Every file in a release is downloaded. To skip some, list wildcard patterns
 # (* and ?, case-insensitive). `include` does the opposite: only matching files.

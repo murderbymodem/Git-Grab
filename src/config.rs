@@ -4,9 +4,6 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const APP_DIR: &str = "github-grab";
-/// The program's name before it was renamed GitHub-Grab (versions up to 0.7).
-pub const LEGACY_APP_DIR: &str = "github-release-archiver";
 
 // `deny_unknown_fields` doesn't work together with `flatten`, so unknown keys
 // are caught by `check_unknown_keys` instead.
@@ -149,21 +146,13 @@ const TOP_KEYS: &[&str] = &[
     "archive_root", "mirrors", "github_token", "api_url", "oauth_client_id", "interval_minutes", "starred", "repo", "account", "site",
 ];
 const REPO_KEYS: &[&str] = &["repo", "folder"];
-/// Settings from older versions that are now ignored (warned about, not rejected).
-const RETIRED_KEYS: &[&str] = &["only_os", "os_rules"];
 const STARRED_KEYS: &[&str] = &["enabled", "user", "ignore", "include_forks", "include_archived"];
 const ACCOUNT_KEYS: &[&str] = &["url", "ignore", "include_forks", "include_archived"];
 
 /// Rejects misspelled keys, which serde would otherwise silently ignore.
 fn check_unknown_keys(text: &str) -> Result<()> {
     let table: toml::Table = toml::from_str(text)?;
-    let known = |k: &str, extra: &[&str]| {
-        if RETIRED_KEYS.contains(&k) {
-            log::warn!("config setting \"{k}\" is no longer used (files are no longer sorted by OS); ignoring it");
-            return true;
-        }
-        OPTION_KEYS.contains(&k) || extra.contains(&k)
-    };
+    let known = |k: &str, extra: &[&str]| OPTION_KEYS.contains(&k) || extra.contains(&k);
     for k in table.keys() {
         if !known(k, TOP_KEYS) {
             bail!("unknown setting \"{k}\" in config");
@@ -395,11 +384,6 @@ mod tests {
         assert_eq!(cfg.source_folder("git.example.org:3000"), "git.example.org_3000");
         // Same project name on two sites is fine; twice on one site isn't.
         assert!(Config::parse("archive_root = '/a'\n[[repo]]\nrepo = 'a/tool'\n[[repo]]\nrepo = 'b/tool'").is_err());
-    }
-
-    #[test]
-    fn accepts_retired_settings() {
-        Config::parse("archive_root = \"/x\"\nonly_os = [\"Windows\"]\n[[os_rules]]\npattern = \"*\"\nos = \"X\"").unwrap();
     }
 
     #[test]

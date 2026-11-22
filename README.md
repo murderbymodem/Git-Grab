@@ -1,4 +1,4 @@
-# GitHub-Grab
+# Git-Grab
 
 Checks projects on GitHub, GitLab, Gitea, Forgejo and Codeberg for new
 releases, including everything you've starred on GitHub or every project of a
@@ -63,19 +63,21 @@ It's a single program for Windows and Linux.
 - **Mirrors.** Keep the archive in two (or more) places at once, such as a
   local drive plus a network share. Files are downloaded once and copied to
   each mirror. A mirror that's offline catches up on the next run.
-- **README copies.** Each project folder gets a copy of the repo's README, so you
-  can tell what a project is. It's refreshed when the README changes on GitHub.
+- **README copies.** Each project folder gets a copy of the project's README, so
+  you can tell what a project is. It's refreshed when the README changes.
   Turn it off with `save_readme = false`, globally or per repo.
 - **Retention** (`keep_versions`) only ever deletes folders this tool created.
+- **Portable.** Settings, logs, cache and logins all live in the program's
+  folder. Nothing goes in AppData or the registry.
 
 ## Quick start (Windows)
 
-1. Download `github-grab-<version>-windows-x64.zip` from
-   [Releases](https://github.com/murderbymodem/GitHub-Grab/releases).
+1. Download `git-grab-<version>-windows-x64.zip` from
+   [Releases](https://github.com/murderbymodem/Git-Grab/releases).
 2. **Extract it to a permanent folder**, not Downloads. For example
-   `C:\Tools\GitHub-Grab\`. The program is portable: it keeps its
+   `C:\Tools\Git-Grab\`. The program is portable: it keeps its
    settings in that folder, and the hourly check runs it from there.
-3. **Double-click `github-grab.exe`.** A guided setup asks for:
+3. **Double-click `git-grab.exe`.** A guided setup asks for:
    - where to save releases (for example `D:\Software`), plus an optional mirror
      such as `\\nas\software`
    - your GitHub login
@@ -90,39 +92,41 @@ It's a single program for Windows and Linux.
 Windows may show a SmartScreen warning the first time, because the program isn't
 code-signed. Click **More info → Run anyway**.
 
-You can do the same from a terminal: run `github-grab setup`, or the
+You can do the same from a terminal: run `git-grab setup`, or the
 individual steps `init`, `login`, `run --dry-run` and `task install`. On Linux,
 hourly checks use a systemd timer (see below).
 
-## Portable: files next to the program
+## Portable: everything in one folder
 
-Everything the program needs lives in the folder that holds it:
+Git-Grab keeps everything it needs (other than the archive itself) in the folder
+that holds its config. By default the config is next to the program, so that
+means the program's own folder:
 
 | File | What it is |
 |---|---|
 | `config.toml` | Your settings |
-| `github-grab.log` | Log of the scheduled checks (`.log.1` is the previous one) |
-| `cache\` | Cached GitHub responses, so unchanged data doesn't use up the rate limit |
-| `token` | Linux only: the saved GitHub login, readable only by you |
+| `git-grab.log` | Log of the scheduled checks (`.log.1` is the previous one) |
+| `cache\` | Cached site responses, so unchanged data doesn't use up GitHub's rate limit |
+| `token` | Your saved GitHub login |
+| `token-<host>` | Saved logins for other sites, e.g. `token-git.magicbean.dev` |
 
-On Windows, the GitHub login is kept in Windows Credential Manager rather than a
-file. It's safer there, and it carries over if you move the folder.
+Nothing is written to `%APPDATA%`, the registry, or Windows Credential Manager.
+The scheduled task is the only thing outside the folder.
+
+**Saved logins are protected.** On Windows, the token files are encrypted with
+Windows' data protection (DPAPI), so only your Windows account on that PC can
+read them. On Linux, only their owner can read them. If you copy the folder to
+another PC or user account, everything else works, and you just run `login`
+there again.
 
 **Moving the folder:** move it, then double-click the program in its new place.
 It notices that the hourly check still points at the old location and offers to
 update it.
 
-If the program's folder can't be written to, such as `C:\Program Files` or
-`/usr/local/bin`, these files go in your user profile instead
-(`%APPDATA%\github-grab` or `~/.config/github-grab`).
-`-c path\to\config.toml` uses a config from anywhere.
-
-**Upgrading from 0.6 or earlier**, which kept settings in
-`%APPDATA%\github-release-archiver`: start the
-new version from its permanent folder. Setup finds the old settings and offers to
-move them next to the program. It then updates the hourly check to run the new
-copy, and removes what the old version left behind: the old config and log,
-its cache, and the program copy in `%LOCALAPPDATA%\Programs`.
+The folder must be writable, so don't put Git-Grab in `C:\Program Files`. To
+keep the program and its files apart (for example on a Linux server), use
+`-c /path/to/config.toml`. The log, cache and logins then live next to that
+config file instead.
 
 ## Mirrors
 
@@ -148,9 +152,9 @@ drive letters.
 
 ## Logging in
 
-`github-grab login` saves a GitHub token: in **Windows Credential
-Manager** on Windows, and on Linux in a `token` file next to the program that
-only you can read. Logging in lets the tool
+`git-grab login` saves a GitHub token in the `token` file next to the config.
+It's encrypted for your Windows account on Windows, and readable only by you on
+Linux. Logging in lets the tool
 read your starred repos and raises GitHub's limit from 60 to 5,000 requests
 per hour.
 
@@ -166,7 +170,7 @@ There are two ways to log in:
   2. Enter any name and homepage. The callback URL is not used: enter the homepage again.
   3. Register it, then tick **Enable Device Flow**.
   4. Put the app's **Client ID** in the config (`oauth_client_id = "Ov23li..."`),
-     or build it in with `GITHUB_GRAB_OAUTH_CLIENT_ID=... cargo build --release`.
+     or build it in with `GIT_GRAB_OAUTH_CLIENT_ID=... cargo build --release`.
 
   A client ID is not a secret, and no client secret is used.
 
@@ -194,7 +198,7 @@ ignore = ["MagicBeanDev/old-*"]   # optional, like [starred]
 include_forks = false              # optional
 ```
 
-GitHub-Grab finds out what kind of site it is talking to by asking the site.
+Git-Grab finds out what kind of site it is talking to by asking the site.
 github.com, gitlab.com and codeberg.org are known. If a site can't be
 identified, or you'd rather not wait for the check, say what it is:
 
@@ -206,11 +210,11 @@ folder = "MagicBean"    # optional: the site's folder in the archive (default: g
 ```
 
 **Logging in** isn't needed for public projects. For private ones, run
-`github-grab login --site https://git.magicbean.dev` and paste a token. It
+`git-grab login --site https://git.magicbean.dev` and paste a token. It
 shows where to create one: GitLab needs the `read_api` scope, and Gitea/Forgejo
 needs read access to repositories. Each site's token is stored separately and
 only ever sent to that site. Release files hosted somewhere else get no token.
-`github-grab logout --site …` removes it. You can also put `token = "…"` in the
+`git-grab logout --site …` removes it. You can also put `token = "…"` in the
 site's `[[site]]` entry.
 
 Differences between sites:
@@ -245,16 +249,16 @@ belongs to, so the folder names stay the same from run to run.
 ## Windows: scheduled task
 
 ```powershell
-github-grab task install                        # hourly, while you're logged on
-github-grab task install --every 30             # every 30 minutes
-github-grab task install --run-when-logged-off  # all the time (asks for your password)
-github-grab task run      # start it now to test
-github-grab task status   # last run time and result
-github-grab task remove
+git-grab task install                        # hourly, while you're logged on
+git-grab task install --every 30             # every 30 minutes
+git-grab task install --run-when-logged-off  # all the time (asks for your password)
+git-grab task run      # start it now to test
+git-grab task status   # last run time and result
+git-grab task remove
 ```
 
 - The task runs `run` with the config file you used when installing it, and
-  writes its log to `github-grab.log` next to that config. When the
+  writes its log to `git-grab.log` next to that config. When the
   log passes 5 MB, the old one is kept as `.log.1`.
 - **By default** it runs only while you're logged on, and no password is
   stored. A console window flashes briefly each time.
@@ -268,11 +272,11 @@ github-grab task remove
 
 ## Linux: systemd timer
 
-`/etc/systemd/system/github-grab.service`
+`/etc/systemd/system/git-grab.service`
 
 ```ini
 [Unit]
-Description=Archive GitHub releases
+Description=Archive releases with Git-Grab
 Wants=network-online.target
 After=network-online.target remote-fs.target
 RequiresMountsFor=/mnt/software
@@ -280,14 +284,14 @@ RequiresMountsFor=/mnt/software
 [Service]
 Type=oneshot
 User=archiver
-ExecStart=/usr/local/bin/github-grab -c /etc/github-grab/config.toml run
+ExecStart=/usr/local/bin/git-grab -c /var/lib/git-grab/config.toml run
 ```
 
-`/etc/systemd/system/github-grab.timer`
+`/etc/systemd/system/git-grab.timer`
 
 ```ini
 [Unit]
-Description=Run github-grab hourly
+Description=Run git-grab hourly
 
 [Timer]
 OnBootSec=5min
@@ -299,12 +303,15 @@ WantedBy=timers.target
 ```
 
 ```bash
-sudo -u archiver github-grab login
-sudo systemctl enable --now github-grab.timer
+sudo install -d -o archiver -m 700 /var/lib/git-grab
+sudo -u archiver git-grab -c /var/lib/git-grab/config.toml init --archive-root /mnt/software
+sudo -u archiver git-grab -c /var/lib/git-grab/config.toml login
+sudo systemctl enable --now git-grab.timer
 ```
 
-The first command saves the token for the `archiver` user. Logs:
-`journalctl -u github-grab`.
+These commands create a folder only the `archiver` user can access, put the
+config there, and save the login next to it. The cache lives there too. Logs:
+`journalctl -u git-grab`.
 
 ## Commands
 
@@ -317,45 +324,12 @@ The first command saves the token for the `archiver` user. Logs:
 | `watch` | Keep running, checking every `interval_minutes` and re-reading the config each time |
 | `task install/run/status/remove` | Windows scheduled task |
 
-Global options: `-c/--config PATH` (or the `GITHUB_GRAB_CONFIG`
+Global options: `-c/--config PATH` (or the `GIT_GRAB_CONFIG`
 environment variable) and `--log-file PATH`. Exit codes: `0` success, `1` some
 repos or files failed (the rest continued), `2` the run couldn't start.
 Set `RUST_LOG=debug` for detailed logs.
 
 Every option is explained in [`config.example.toml`](config.example.toml).
-
-## Upgrading from 0.9 or earlier: site folders
-
-Earlier versions put projects straight into the archive folder
-(`\\nas\software\ripgrep\`). On its first run, 0.10 moves each one into its site's
-folder (`\\nas\software\GitHub\ripgrep\`), in the main archive and in every mirror,
-so nothing is downloaded or copied again. A folder is only moved if its state
-file says it belongs to that project. Folders the program didn't create, and
-projects no longer in your config, are left where they are.
-
-## Renamed from github-release-archiver
-
-Up to version 0.7, GitHub-Grab was called *github-release-archiver*. The new
-version picks up everything the old one left, so there's nothing to redo:
-
-- **Archive:** each project's hidden state file (`.github-release-archiver.json`)
-  is renamed to `.github-grab.json` on the next run, in the main archive and in
-  mirrors.
-- **Windows login:** a token saved in Credential Manager under the old name is
-  moved to the new one.
-- **Scheduled task:** double-click `github-grab.exe` and it offers to replace the
-  old "GitHub Release Archiver" task with a "GitHub-Grab" task that runs the new
-  program. It then renames the old log and removes `github-release-archiver.exe`
-  if it's in the same folder.
-- `GITHUB_RELEASE_ARCHIVER_CONFIG` still works if `GITHUB_GRAB_CONFIG` isn't set.
-
-## Upgrading from 0.4 or earlier
-
-Earlier versions sorted files into OS folders (`ripgrep\Windows\14.1.0\`). The
-first run of 0.5 moves those files into `ripgrep\14.1.0\` and removes the empty
-OS folders, so nothing is downloaded again. It only touches folders it recorded
-itself. The old `only_os` and `os_rules` settings are ignored with a warning, and
-can be deleted from the config.
 
 ## Building
 
@@ -364,10 +338,10 @@ cargo build --release
 ```
 
 Ready-made programs are on the
-[Releases](https://github.com/murderbymodem/GitHub-Grab/releases) page:
+[Releases](https://github.com/murderbymodem/Git-Grab/releases) page:
 
-- `github-grab-<version>-windows-x64.zip` for 64-bit Windows 10/11
-- `github-grab-<version>-linux-x64.tar.gz` for 64-bit Linux. It's a
+- `git-grab-<version>-windows-x64.zip` for 64-bit Windows 10/11
+- `git-grab-<version>-linux-x64.tar.gz` for 64-bit Linux. It's a
   single self-contained file that runs on any distro with nothing to install.
 
 Publishing a release on GitHub (with a new `v*` tag) builds and attaches both

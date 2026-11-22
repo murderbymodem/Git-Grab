@@ -42,11 +42,11 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x64
-            exe: github-grab.exe
+            exe: git-grab.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl # fully static: runs on any Linux distro
             platform: linux-x64
-            exe: github-grab
+            exe: git-grab
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           version="${TAG#v}"
-          name="github-grab-${version}-${{ matrix.platform }}"
+          name="git-grab-${version}-${{ matrix.platform }}"
           mkdir -p "staging/$name"
           cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md LICENSE config.example.toml "staging/$name/"
           cd staging

@@ -1,4 +1,4 @@
-# GitHub-Grab
+# Git-Grab
 
 Rust CLI (Windows + Linux) that archives release assets from GitHub, GitLab and
 Gitea/Forgejo into
@@ -34,8 +34,8 @@ Gitea/Forgejo into
 - `src/forge.rs`: site kinds (GitHub, GitLab, Gitea/Forgejo), repo/account address parsing,
   site detection, and the GitLab and Gitea APIs mapped to one Release shape
 - `src/github.rs`: shared HTTP client (ETag cache, per-site auth header, downloads) and the GitHub API
-- `src/auth.rs`: login (token paste or OAuth device flow), token storage (per site)
-- `src/paths.rs`: portable file locations (config, log, cache next to the exe; per-user fallback)
+- `src/auth.rs`: login (token paste or OAuth device flow), per-site token files (DPAPI on Windows)
+- `src/paths.rs`: portable file locations (log, cache, logins next to the config; config next to the exe)
 - `src/setup.rs`: interactive setup wizard and menu (runs when the .exe is double-clicked)
 - `src/wintask.rs`: Windows Task Scheduler XML and `schtasks.exe` calls
 - `config.example.toml`: documented example config, also used by `init` and by tests
@@ -46,13 +46,13 @@ Gitea/Forgejo into
   "host/path" elsewhere. Don't change that format; existing archives depend on it.
 - Tokens are only sent to their own site's host (`Client::request`); keep it that way.
 
-- The program was renamed from github-release-archiver; code that reads the old names
-  (`LEGACY_*` constants) exists so existing installs and archives keep working. Keep it.
-
 - Every config key must be added to the key lists in `config.rs` (`TOP_KEYS` etc.),
   or it will be rejected as unknown, and documented in `config.example.toml`.
 - Never delete files under `archive_root` that the state file doesn't record.
-- The app is portable: new files it keeps (other than the archive) go in `paths::data_dir()`,
-  never directly in %APPDATA% or ~/.config.
+- The app is portable: everything it keeps (other than the archive) goes in `paths::data_dir()`,
+  the config file's folder (next to the exe by default). Never use %APPDATA%, ~/.config, the
+  registry or Credential Manager. Saved tokens are files there, DPAPI-encrypted on Windows.
+- No compatibility code for earlier releases (old names, layouts, settings): there are no
+  installs to migrate. Make breaking changes cleanly.
 - Keep platform-specific code behind `cfg(windows)` / `cfg(not(windows))`; the rest must
   compile and be unit-testable on Linux.

@@ -1,18 +1,18 @@
-//! Logging in to GitHub and storing the token.
+//! Logging in and storing tokens.
 //!
-//! The token is kept in Windows Credential Manager on Windows (safer than a
-//! file, and nothing to carry around), and on Linux in a `token` file readable
-//! only by its owner, next to the config.
+//! Tokens are kept in the program's folder (next to the config), so the whole
+//! setup stays in one place: `token` for GitHub and `token-<host>` for other
+//! sites. On Windows the file is encrypted with the Windows data protection
+//! API (DPAPI), so only the same Windows user on the same PC can read it; on
+//! Linux it's readable only by its owner.
 
 use anyhow::{bail, Context, Result};
 use log::warn;
 use serde::Deserialize;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-#[cfg(windows)]
-const SERVICE: &str = "github-grab";
-/// Name used before the rename to GitHub-Grab; a login saved under it is moved.
-const LEGACY_SERVICE: &str = crate::config::LEGACY_APP_DIR;
 
 /// Where a token came from, for `status`.
 pub enum Source {
@@ -33,7 +33,7 @@ pub fn resolve(config_token: Option<&str>) -> Option<(String, Source)> {
             }
         }
     }
-    match load() {
+    match load_for(crate::forge::GITHUB_HOST) {
         Ok(Some(t)) => Some((t, Source::Saved)),
         Ok(None) => None,
         Err(e) => {
@@ -42,160 +42,6 @@ pub fn resolve(config_token: Option<&str>) -> Option<(String, Source)> {
         }
     }
 }
-
-#[cfg(windows)]
-mod store {
-    use super::{LEGACY_SERVICE, SERVICE};
-    use anyhow::Result;
-
-    /// The Windows token lives in Credential Manager; `load` moves one saved
-    /// under the old name.
-    pub fn migrate_legacy() {}
-
-    fn entry() -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(SERVICE, "github-token")?)
-    }
-    fn legacy_entry() -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(LEGACY_SERVICE, "github-token")?)
-    }
-    /// Logins for sites other than github.com.
-    fn site_entry(host: &str) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(SERVICE, &format!("token:{host}"))?)
-    }
-    pub fn save_site(host: &str, token: &str) -> Result<String> {
-        site_entry(host)?.set_password(token)?;
-        Ok("Windows Credential Manager".into())
-    }
-    pub fn load_site(host: &str) -> Result<Option<String>> {
-        match site_entry(host)?.get_password() {
-            Ok(t) => Ok(Some(t)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-    pub fn delete_site(host: &str) -> Result<bool> {
-        match site_entry(host)?.delete_credential() {
-            Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
-    pub fn save(token: &str) -> Result<String> {
-        entry()?.set_password(token)?;
-        Ok("Windows Credential Manager".into())
-    }
-    pub fn load() -> Result<Option<String>> {
-        match entry()?.get_password() {
-            Ok(t) => Ok(Some(t)),
-            Err(keyring::Error::NoEntry) => match legacy_entry()?.get_password() {
-                // Saved before the rename: store it under the new name.
-                Ok(t) => {
-                    if entry()?.set_password(&t).is_ok() {
-                        let _ = legacy_entry()?.delete_credential();
-                    }
-                    Ok(Some(t))
-                }
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
-    }
-    pub fn delete() -> Result<bool> {
-        let old = legacy_entry()?.delete_credential().is_ok();
-        match entry()?.delete_credential() {
-            Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(old),
-            Err(e) => Err(e.into()),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-mod store {
-    use super::LEGACY_SERVICE;
-    use anyhow::Result;
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::path::PathBuf;
-
-    /// Next to the program (portable), like the config.
-    fn path() -> Result<PathBuf> {
-        Ok(crate::paths::data_dir().join("token"))
-    }
-    /// Logins for sites other than github.com: token-<host> next to the program.
-    fn site_path(host: &str) -> PathBuf {
-        crate::paths::data_dir().join(format!("token-{}", crate::util::sanitize(host)))
-    }
-    pub fn save_site(host: &str, token: &str) -> Result<String> {
-        write_private(&site_path(host), token)
-    }
-    pub fn load_site(host: &str) -> Result<Option<String>> {
-        match fs::read_to_string(site_path(host)) {
-            Ok(t) => Ok(Some(t.trim().to_string()).filter(|t| !t.is_empty())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-    pub fn delete_site(host: &str) -> Result<bool> {
-        match fs::remove_file(site_path(host)) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Where versions before 0.7 (and before the rename) saved it.
-    fn legacy_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join(LEGACY_SERVICE).join("token"))
-    }
-    pub fn save(token: &str) -> Result<String> {
-        write_private(&path()?, token)
-    }
-    /// Writes a file only its owner can read.
-    fn write_private(p: &std::path::Path, token: &str) -> Result<String> {
-        if let Some(dir) = p.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let _ = fs::remove_file(p); // so the new file is created with mode 600
-        let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(p)?;
-        f.write_all(token.as_bytes())?;
-        Ok(p.display().to_string())
-    }
-    pub fn load() -> Result<Option<String>> {
-        let p = path()?;
-        let p = match legacy_path() {
-            Some(old) if !p.exists() && old.exists() => old,
-            _ => p,
-        };
-        match fs::read_to_string(p) {
-            Ok(t) => Ok(Some(t.trim().to_string()).filter(|t| !t.is_empty())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-    /// Moves a token saved by an earlier version next to the program.
-    pub fn migrate_legacy() {
-        let (Ok(new), Some(old)) = (path(), legacy_path()) else { return };
-        if old == new || !old.exists() {
-            return;
-        }
-        if !new.exists() && fs::copy(&old, &new).is_err() {
-            return; // fs::copy keeps the 600 permissions
-        }
-        let _ = fs::remove_file(&old);
-    }
-    pub fn delete() -> Result<bool> {
-        match fs::remove_file(path()?) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
-}
-
-pub use store::{delete, load, migrate_legacy, save};
 
 /// The saved token for a site: github.com uses `resolve`; other sites use
 /// their [[site]] token from the config, then a login saved with `login --site`.
@@ -206,25 +52,120 @@ pub fn resolve_site(host: &str, config_token: Option<&str>, github_config_token:
     if let Some(t) = config_token.filter(|t| !t.is_empty()) {
         return Some(t.to_string());
     }
-    store::load_site(host).unwrap_or_else(|e| {
+    load_for(host).unwrap_or_else(|e| {
         warn!("cannot read saved login for {host}: {e:#}");
         None
     })
 }
 
+fn token_path(host: &str) -> PathBuf {
+    let name = if host == crate::forge::GITHUB_HOST { "token".to_string() } else { format!("token-{}", crate::util::sanitize(host)) };
+    crate::paths::data_dir().join(name)
+}
+
+/// Saves a token; returns where.
 pub fn save_for(host: &str, token: &str) -> Result<String> {
-    if host == crate::forge::GITHUB_HOST {
-        save(token)
-    } else {
-        store::save_site(host, token)
-    }
+    let p = token_path(host);
+    let sealed = seal(token.as_bytes())?;
+    write_private(&p, &sealed).with_context(|| format!("cannot save the login to {}", p.display()))?;
+    Ok(p.display().to_string())
+}
+
+pub fn load_for(host: &str) -> Result<Option<String>> {
+    let p = token_path(host);
+    let bytes = match fs::read(&p) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let plain = unseal(&bytes).with_context(|| {
+        format!("{} was saved by another user or on another PC; run `login` again", p.display())
+    })?;
+    let t = String::from_utf8(plain).context("saved login is damaged; run `login` again")?;
+    Ok(Some(t.trim().to_string()).filter(|t| !t.is_empty()))
 }
 
 pub fn delete_for(host: &str) -> Result<bool> {
-    if host == crate::forge::GITHUB_HOST {
-        delete()
-    } else {
-        store::delete_site(host)
+    match fs::remove_file(token_path(host)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Writes a file only its owner can read (on Linux; on Windows the contents
+/// are encrypted for the current user instead).
+fn write_private(p: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = p.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _ = fs::remove_file(p); // so a new file is created with the permissions below
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(p)?.write_all(bytes)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn seal(data: &[u8]) -> Result<Vec<u8>> {
+    dpapi::protect(data)
+}
+#[cfg(windows)]
+fn unseal(data: &[u8]) -> Result<Vec<u8>> {
+    dpapi::unprotect(data)
+}
+#[cfg(not(windows))]
+fn seal(data: &[u8]) -> Result<Vec<u8>> {
+    Ok(data.to_vec())
+}
+#[cfg(not(windows))]
+fn unseal(data: &[u8]) -> Result<Vec<u8>> {
+    Ok(data.to_vec())
+}
+
+/// Windows data protection: encrypts data so only the current Windows user
+/// (on this PC) can decrypt it.
+#[cfg(windows)]
+mod dpapi {
+    use anyhow::{bail, Result};
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+    };
+
+    fn run(data: &[u8], protect: bool) -> Result<Vec<u8>> {
+        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: null_mut() };
+        // SAFETY: input points at `data` for the duration of the call; output
+        // is allocated by Windows and freed with LocalFree below.
+        let ok = unsafe {
+            if protect {
+                CryptProtectData(&input, null(), null(), null(), null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+            } else {
+                CryptUnprotectData(&input, null_mut(), null(), null(), null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+            }
+        };
+        if ok == 0 {
+            bail!("{}", std::io::Error::last_os_error());
+        }
+        // SAFETY: on success Windows filled output with a buffer of cbData bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+        unsafe { LocalFree(output.pbData as _) };
+        Ok(bytes)
+    }
+
+    pub fn protect(data: &[u8]) -> Result<Vec<u8>> {
+        run(data, true)
+    }
+
+    pub fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
+        run(data, false)
     }
 }
 
@@ -261,7 +202,7 @@ struct TokenReply {
 pub fn device_login(api_url: &str, client_id: &str) -> Result<String> {
     let web = web_url(api_url);
     let http = reqwest::blocking::Client::builder()
-        .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Git-Grab/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .build()?;
     // No scopes: read access to public data, which covers public stars and releases.
@@ -335,6 +276,28 @@ fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sealed_tokens_round_trip() {
+        let sealed = seal(b"github_pat_example").unwrap();
+        #[cfg(windows)]
+        assert_ne!(sealed, b"github_pat_example"); // encrypted with DPAPI
+        assert_eq!(unseal(&sealed).unwrap(), b"github_pat_example");
+    }
+
+    #[test]
+    fn token_files_are_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("token");
+        write_private(&p, b"x").unwrap();
+        write_private(&p, b"y").unwrap(); // replacing works
+        assert_eq!(fs::read(&p).unwrap(), b"y");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
 
     #[test]
     fn web_urls() {

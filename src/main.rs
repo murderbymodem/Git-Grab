@@ -20,12 +20,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// GitHub-Grab: archives every file of each GitHub release into <root>/<Project>/<version>/ folders.
+/// Git-Grab: archives every file of each release from GitHub, GitLab, Gitea and Forgejo into <root>/<Site>/<Project>/<version>/ folders.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
     /// Config file [default: config.toml next to the program]
-    #[arg(short, long, env = "GITHUB_GRAB_CONFIG", global = true)]
+    #[arg(short, long, env = "GIT_GRAB_CONFIG", global = true)]
     config: Option<PathBuf>,
     /// Append log output to this file instead of the console
     #[arg(long, global = true)]
@@ -144,11 +144,9 @@ fn main() -> ExitCode {
 }
 
 fn real_main(cli: Cli) -> Result<ExitCode> {
-    let config_path = cli
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("GITHUB_RELEASE_ARCHIVER_CONFIG").map(PathBuf::from)) // pre-rename name
-        .unwrap_or_else(paths::config_path);
+    let config_path = cli.config.clone().unwrap_or_else(paths::default_config);
+    // Log, cache and logins live next to the config.
+    paths::init(&config_path);
     let Some(command) = cli.command else { return Ok(ExitCode::SUCCESS) };
     match command {
         Command::Setup => setup::run(&config_path)?,
@@ -216,7 +214,7 @@ fn login(config_path: &Path, client_id: Option<String>, with_token: bool) -> Res
     let api = cfg.as_ref().map(|c| c.api_url.clone()).unwrap_or_else(|| "https://api.github.com".into());
     let client_id = client_id
         .or_else(|| cfg.as_ref().and_then(|c| c.oauth_client_id.clone()))
-        .or_else(|| option_env!("GITHUB_GRAB_OAUTH_CLIENT_ID").map(str::to_string))
+        .or_else(|| option_env!("GIT_GRAB_OAUTH_CLIENT_ID").map(str::to_string))
         .filter(|c| !c.is_empty());
 
     let token = if with_token {
@@ -234,7 +232,7 @@ fn login(config_path: &Path, client_id: Option<String>, with_token: bool) -> Res
     let user = github::Client::new(&api, Some(token.clone()), None)?
         .current_user()
         .context("the token didn't work")?;
-    let place = auth::save(&token)?;
+    let place = auth::save_for(forge::GITHUB_HOST, &token)?;
     println!("Logged in as {}. Token saved in {place}.", user.login);
     Ok(user.login)
 }
@@ -470,7 +468,7 @@ fn install_task(
     wintask::install(&spec, password.as_deref())?;
     println!("Scheduled task \"{name}\" created: checks every {every} minute(s).");
     println!("Log file: {}", log.display());
-    println!("Test it now with: github-grab task run");
+    println!("Test it now with: git-grab task run");
     if !run_when_logged_off {
         println!("It runs only while you're logged on. Use --run-when-logged-off to run at all times.");
     }

@@ -111,7 +111,7 @@ impl Client {
         json_accept: &'static str,
     ) -> Result<Client> {
         let http = Http::builder()
-            .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Git-Grab/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
             .timeout(None) // no overall limit: assets can be many GB
             .tcp_keepalive(Duration::from_secs(60))

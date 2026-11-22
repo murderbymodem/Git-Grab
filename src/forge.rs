@@ -357,7 +357,7 @@ impl Forge {
 /// Asks a site which software it runs.
 pub fn detect(base: &str) -> Result<Kind> {
     let http = reqwest::blocking::Client::builder()
-        .user_agent(concat!("GitHub-Grab/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Git-Grab/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()?;
     let get = |path: &str| http.get(format!("{base}{path}")).header("Accept", "application/json").send().ok();
